@@ -1,0 +1,10 @@
+{
+  "description": "Track work and breaks, organize time by project and task, and manage team productivity with calendars, timesheets, reports, and exports.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

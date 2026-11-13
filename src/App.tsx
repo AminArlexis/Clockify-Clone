@@ -132,7 +132,11 @@ function Modal({
   children: ReactNode;
   wide?: boolean;
 }) {
-  const dialogRef = useRef<HTMLElement>(null);
+   const dialogRef = useRef<HTMLElement>(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
   useEffect(() => {
     const previousFocus = document.activeElement as HTMLElement | null;
     const focusable = () =>
@@ -141,9 +145,12 @@ function Modal({
           'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
         ) || [],
       );
-    focusable()[0]?.focus();
+    const firstField = dialogRef.current?.querySelector<HTMLElement>(
+      "input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
+    );
+    (firstField ?? focusable()[0])?.focus();
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
       if (event.key === "Tab") {
         const items = focusable();
         const first = items[0];
@@ -162,7 +169,7 @@ function Modal({
       window.removeEventListener("keydown", handleKey);
       previousFocus?.focus();
     };
-  }, [onClose]);
+  }, []);
   return (
     <div
       className="modal-backdrop"

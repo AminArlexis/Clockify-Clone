@@ -11,7 +11,10 @@ import { completeActiveTimer, pauseActiveTimer, resumeActiveTimer } from "../lib
 import { isSupabaseConfigured, supabase } from "../lib/supabase";
 import {
   fetchAppDataFromSupabase,
-  syncUserToSupabase,
+  registerWorkspaceAccount,
+  updateWorkspaceMemberInSupabase,
+  updateMyProfileInSupabase,
+  inviteWorkspaceMemberInSupabase,
   syncEntryToSupabase,
   deleteEntryFromSupabase,
   syncProjectToSupabase,
@@ -41,6 +44,7 @@ const emptyData: AppData = {
   users: [],
   workspaces: [],
   activeWorkspaceId: "",
+  workspaceMemberships: [],
   projects: [],
   tasks: [],
   tags: [],
@@ -54,7 +58,7 @@ interface AppStoreValue {
   dataError: string;
   timerError: string;
   timerBusy: boolean;
-  login: (email: string, userOverride?: User) => boolean;
+  login: (email: string, userOverride?: User, remoteData?: AppData) => boolean;
   register: (name: string, email: string, customId?: string) => Promise<User>;
   logout: () => Promise<void>;
   switchWorkspace: (id: string) => void;
@@ -77,6 +81,7 @@ interface AppStoreValue {
   saveTag: (tag: Tag) => void;
   deleteTag: (id: string) => void;
   saveUser: (user: User) => void;
+  inviteMember: (email: string, role: User["role"]) => Promise<void>;
   updateProfile: (patch: Partial<User>) => void;
   addAudit: (action: string, target: string, detail: string) => void;
 }
@@ -194,30 +199,25 @@ export function AppStoreProvider({
     setData((current) => ({ ...current, audit: [event, ...current.audit] }));
   };
 
-  const login = (email: string, userOverride?: User) => {
+  const login = (email: string, userOverride?: User, remoteData?: AppData) => {
+    const sourceData = remoteData || data;
     const user =
       userOverride ||
-      data.users.find(
+      sourceData.users.find(
         (candidate) =>
           candidate.email.toLowerCase() === email.toLowerCase() && candidate.status === "active",
       );
-    if (!user) return false;
-    if (user.workspaceIds.length > 0 && !user.workspaceIds.includes(data.activeWorkspaceId)) {
-      setData((current) => ({
-        ...current,
-        users: current.users.some((u) => u.id === user.id)
-          ? current.users
-          : [...current.users, user],
-        activeWorkspaceId: user.workspaceIds[0],
-      }));
-    } else {
-      setData((current) => ({
-        ...current,
-        users: current.users.some((u) => u.id === user.id)
-          ? current.users
-          : [...current.users, user],
-      }));
-    }
+    if (!user || user.status !== "active") return false;
+    const activeWorkspaceId = user.workspaceIds.includes(sourceData.activeWorkspaceId)
+      ? sourceData.activeWorkspaceId
+      : user.workspaceIds[0] || "";
+    setData({
+      ...sourceData,
+      activeWorkspaceId,
+      users: sourceData.users.some((candidate) => candidate.id === user.id)
+        ? sourceData.users
+        : [...sourceData.users, user],
+    });
     setSessionId(user.id);
     return true;
   };
@@ -242,15 +242,15 @@ export function AppStoreProvider({
       timeFormat: "12h",
     };
     const workspace = { id: workspaceId, name: `${name.split(" ")[0]}'s Workspace` };
-    await syncUserToSupabase(user, workspace);
-    setData((current) => ({
-      ...current,
-      users: [...current.users.filter((u) => u.id !== user.id), user],
-      workspaces: [...current.workspaces.filter((w) => w.id !== workspace.id), workspace],
-      activeWorkspaceId: workspaceId,
-    }));
+    await registerWorkspaceAccount(user, workspace);
+    const remoteData = await fetchAppDataFromSupabase(user.id);
+    if (!remoteData) throw new Error("Supabase did not return workspace access after registration.");
+    const registeredUser = remoteData.users.find((candidate) => candidate.id === user.id);
+    if (!registeredUser) throw new Error("The registered profile could not be loaded.");
+    setData(remoteData);
     setSessionId(user.id);
-    return user;
+    setDataError("");
+    return registeredUser;
   };
 
   const startTimer: AppStoreValue["startTimer"] = (input) => {
@@ -543,9 +543,34 @@ export function AppStoreProvider({
 
   const saveUser = (user: User) =>
     setData((current) => {
-      reportSyncError("save profile to Supabase", syncUserToSupabase(user));
+      reportSyncError(
+        "update workspace membership in Supabase",
+        updateWorkspaceMemberInSupabase(current.activeWorkspaceId, {
+          ...user,
+          status: user.status === "inactive" ? "inactive" : "active",
+        }),
+      );
+      const membership = {
+        workspaceId: current.activeWorkspaceId,
+        userId: user.id,
+        role: user.role,
+        status: user.status === "inactive" ? "inactive" as const : "active" as const,
+        createdAt:
+          current.workspaceMemberships?.find(
+            (candidate) =>
+              candidate.workspaceId === current.activeWorkspaceId && candidate.userId === user.id,
+          )?.createdAt || user.joinedAt,
+      };
       return {
         ...current,
+        workspaceMemberships: [
+          ...(current.workspaceMemberships || []).filter(
+            (candidate) =>
+              candidate.workspaceId !== membership.workspaceId ||
+              candidate.userId !== membership.userId,
+          ),
+          membership,
+        ],
         users: current.users.some((candidate) => candidate.id === user.id)
           ? current.users.map((candidate) => (candidate.id === user.id ? user : candidate))
           : [...current.users, user],
@@ -558,7 +583,7 @@ export function AppStoreProvider({
       if (updatedUser) {
         reportSyncError(
           "update profile in Supabase",
-          syncUserToSupabase({ ...updatedUser, ...patch }),
+          updateMyProfileInSupabase({ ...updatedUser, ...patch }),
         );
       }
       return {
@@ -574,7 +599,20 @@ export function AppStoreProvider({
       workspaces: data.workspaces.filter((workspace) =>
         currentUser?.workspaceIds.includes(workspace.id),
       ),
-      users: data.users.filter((user) => user.workspaceIds.includes(workspaceId)),
+      users: data.users
+        .filter((user) => user.workspaceIds.includes(workspaceId))
+        .map((user) => {
+          const membership = data.workspaceMemberships?.find(
+            (candidate) =>
+              candidate.workspaceId === workspaceId && candidate.userId === user.id,
+          );
+          return membership
+            ? { ...user, role: membership.role, status: membership.status }
+            : user;
+        }),
+      workspaceMemberships: (data.workspaceMemberships || []).filter(
+        (membership) => membership.workspaceId === workspaceId,
+      ),
       projects: data.projects.filter((project) => project.workspaceId === workspaceId),
       tasks: data.tasks.filter((task) => task.workspaceId === workspaceId),
       tags: data.tags.filter((tag) => tag.workspaceId === workspaceId),
@@ -606,11 +644,22 @@ export function AppStoreProvider({
         setDataError("");
       },
       switchWorkspace: (activeWorkspaceId) =>
-        setData((current) =>
-          currentUser?.workspaceIds.includes(activeWorkspaceId)
-            ? { ...current, activeWorkspaceId }
-            : current,
-        ),
+        setData((current) => {
+          if (!currentUser?.workspaceIds.includes(activeWorkspaceId)) return current;
+          return {
+            ...current,
+            activeWorkspaceId,
+            users: current.users.map((user) => {
+              const membership = current.workspaceMemberships?.find(
+                (candidate) =>
+                  candidate.workspaceId === activeWorkspaceId && candidate.userId === user.id,
+              );
+              return membership
+                ? { ...user, role: membership.role, status: membership.status }
+                : user;
+            }),
+          };
+        }),
       startTimer,
       pauseTimer,
       resumeTimer,
@@ -627,6 +676,9 @@ export function AppStoreProvider({
       saveTag,
       deleteTag,
       saveUser,
+      inviteMember: async (email, role) => {
+        await inviteWorkspaceMemberInSupabase(data.activeWorkspaceId, email, role);
+      },
       updateProfile,
       addAudit,
     }),

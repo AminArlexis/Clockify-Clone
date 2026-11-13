@@ -11,7 +11,7 @@ VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=YOUR_PUBLISHABLE_OR_ANON_KEY
 ```
 
-The app does not contain a hardcoded project URL, key, or sample-data fallback. Do not put a service-role key in browser code. Apply the database schema and configure Row Level Security before using the app.
+The app does not contain a hardcoded project URL, key, or sample-data fallback. Do not put a service-role key in browser code. Before using the app, run the complete `supabase_schema.sql` script in the Supabase SQL editor; it creates the schema, membership RPCs, and Row Level Security policies.
 
 Install dependencies and run the development server:
 
@@ -29,17 +29,15 @@ pnpm test:run
 
 ## Authentication and data
 
-- `/register` creates a Supabase Auth account; after email verification, the app creates a workspace and profile.
+- `/register` creates a Supabase Auth account. After email verification, the registration RPC claims matching pending workspace invitations or creates a new workspace with the creator as its admin.
 - `/login`, `/forgot`, and `/reset` use Supabase Auth.
-- The signed-in profile's `workspace_ids` determine which workspace records the app fetches.
+- `workspace_members` is the authoritative source for workspace access and per-workspace admin/member roles. `profiles.workspace_ids` is retained only for compatibility.
 - Workspaces, profiles, projects, tasks, tags, time entries, active timers, and audit events are read from their Supabase tables.
 - Changes are written to Supabase, and sync errors are shown in the app.
+- Admins can save email-based pending invitations and choose a role. Supabase Auth email delivery is not configured, so the admin must tell the invitee to register with the same email address; registration then claims the invitation.
+- Members can manage their own time, while workspace admins can manage members and correct workspace time entries. RLS enforces workspace boundaries and audit events cannot be updated or deleted by the app.
 - App records are not cached in browser `localStorage`; legacy prototype cache/session keys are removed.
 - A new Supabase project starts empty. No demo users or records are seeded.
 - Test-only fixtures are in `src/test/fixtures.ts`.
 
-The team invitation UI is intentionally non-functional until a server-side Supabase Edge Function is configured. Do not send service-role credentials to the browser.
-
-## Important security note
-
-Client-side workspace filtering is not a security boundary. Verify that every exposed table has correct Row Level Security policies that enforce membership on the server. Do not enable unrestricted public read/write policies or grant broad table access to `anon`.
+Client-side workspace filtering is not the security boundary; the supplied RLS policies and security-definer RPCs enforce access on the server. Never add unrestricted public read/write policies or grant broad table access to `anon`.

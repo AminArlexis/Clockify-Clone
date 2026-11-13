@@ -5,9 +5,22 @@ import { fetchAppDataFromSupabase } from "../lib/supabaseSync";
 import { createTestData } from "../test/fixtures";
 import { AppStoreProvider, useAppStore } from "./AppStore";
 
+vi.mock("../lib/supabase", () => ({
+  isSupabaseConfigured: true,
+  supabase: {
+    auth: {
+      getSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }),
+    },
+  },
+}));
+
 vi.mock("../lib/supabaseSync", () => ({
   fetchAppDataFromSupabase: vi.fn(),
-  syncUserToSupabase: vi.fn().mockResolvedValue(undefined),
+  claimWorkspaceInvitesInSupabase: vi.fn().mockResolvedValue(undefined),
+  registerWorkspaceAccount: vi.fn().mockResolvedValue(undefined),
+  updateWorkspaceMemberInSupabase: vi.fn().mockResolvedValue(undefined),
+  updateMyProfileInSupabase: vi.fn().mockResolvedValue(undefined),
+  inviteWorkspaceMemberInSupabase: vi.fn().mockResolvedValue(undefined),
   syncEntryToSupabase: vi.fn().mockResolvedValue(undefined),
   deleteEntryFromSupabase: vi.fn().mockResolvedValue(undefined),
   syncProjectToSupabase: vi.fn().mockResolvedValue(undefined),
@@ -23,6 +36,7 @@ function StoreHarness() {
   return (
     <div>
       <output data-testid="workspace">{store.data.activeWorkspaceId}</output>
+      <output data-testid="role">{store.currentUser?.role}</output>
       <output data-testid="timer">{store.data.activeTimer?.status || "none"}</output>
       <output data-testid="segments">{store.data.activeTimer?.segments.length || 0}</output>
       <output data-testid="entries">{store.data.entries.length}</output>
@@ -113,6 +127,23 @@ describe("shared application store", () => {
     expect(screen.getByTestId("entries")).toHaveTextContent("0");
     fireEvent.click(screen.getByText("add entry"));
     expect(screen.getByTestId("entries")).toHaveTextContent("1");
+  });
+
+  it("uses the role assigned in the active workspace", () => {
+    const data = createTestData();
+    data.workspaceMemberships = data.workspaceMemberships?.map((membership) =>
+      membership.workspaceId === "w2" && membership.userId === "u1"
+        ? { ...membership, role: "member" }
+        : membership,
+    );
+    render(
+      <AppStoreProvider initialData={data} initialSessionId="u1">
+        <StoreHarness />
+      </AppStoreProvider>,
+    );
+    expect(screen.getByTestId("role")).toHaveTextContent("admin");
+    fireEvent.click(screen.getByText("workspace two"));
+    expect(screen.getByTestId("role")).toHaveTextContent("member");
   });
 });
 

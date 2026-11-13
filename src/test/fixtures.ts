@@ -35,6 +35,11 @@ export function createTestData(): AppData {
       { id: "w2", name: "Second Test Workspace" },
     ],
     activeWorkspaceId: "w1",
+    workspaceMemberships: [
+      { workspaceId: "w1", userId: "u1", role: "admin", status: "active", createdAt: start },
+      { workspaceId: "w2", userId: "u1", role: "admin", status: "active", createdAt: start },
+      { workspaceId: "w1", userId: "u2", role: "member", status: "active", createdAt: start },
+    ],
     projects: [
       {
         id: "p1",

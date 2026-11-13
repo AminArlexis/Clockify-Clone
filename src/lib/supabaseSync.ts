@@ -9,47 +9,37 @@ import type {
   AuditEvent,
   User,
   Workspace,
+  WorkspaceMembership,
 } from "../types";
 
 export async function fetchAppDataFromSupabase(userId: string): Promise<AppData | null> {
   const client = supabase;
   if (!isSupabaseConfigured || !client || !userId) return null;
 
-  const { data: ownProfile, error: ownProfileError } = await client
-    .from("profiles")
-    .select("*")
-    .eq("id", userId)
-    .maybeSingle();
-  if (ownProfileError) throw ownProfileError;
-  if (!ownProfile) return null;
+  const { data: ownMemberships, error: ownMembershipsError } = await client
+    .from("workspace_members")
+    .select("workspace_id, user_id, role, status, created_at")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .order("created_at", { ascending: true });
+  if (ownMembershipsError) throw ownMembershipsError;
+  if (!ownMemberships?.length) return null;
 
-  const workspaceIds: string[] = ownProfile.workspace_ids || [];
-  const mapProfile = (u: any): User => ({
-    id: u.id,
-    workspaceIds: u.workspace_ids || [],
-    name: u.name,
-    email: u.email,
-    role: u.role === "admin" ? "admin" : "member",
-    status: u.status || "active",
-    joinedAt: u.joined_at,
-    avatar: u.avatar || "",
-    timezone: u.timezone || "UTC",
-    timeFormat: u.time_format === "24h" ? "24h" : "12h",
-  });
-  if (workspaceIds.length === 0) {
-    return {
-      users: [mapProfile(ownProfile)],
-      workspaces: [],
-      activeWorkspaceId: "",
-      projects: [],
-      tasks: [],
-      tags: [],
-      entries: [],
-      audit: [],
-    };
-  }
+  const workspaceIds = [...new Set(ownMemberships.map((membership) => membership.workspace_id))];
+  const [workspacesRes, membershipsRes] = await Promise.all([
+    client.from("workspaces").select("*").in("id", workspaceIds),
+    client
+      .from("workspace_members")
+      .select("workspace_id, user_id, role, status, created_at")
+      .in("workspace_id", workspaceIds),
+  ]);
+  if (workspacesRes.error) throw workspacesRes.error;
+  if (membershipsRes.error) throw membershipsRes.error;
+
+  const memberIds = [
+    ...new Set([userId, ...(membershipsRes.data || []).map((membership) => membership.user_id)]),
+  ];
   const [
-    workspacesRes,
     profilesRes,
     projectsRes,
     tasksRes,
@@ -58,8 +48,10 @@ export async function fetchAppDataFromSupabase(userId: string): Promise<AppData 
     timerRes,
     auditRes,
   ] = await Promise.all([
-    client.from("workspaces").select("*").in("id", workspaceIds),
-    client.from("profiles").select("*").overlaps("workspace_ids", workspaceIds),
+    client.from("profiles").select("*").in(
+      "id",
+      memberIds,
+    ),
     client.from("projects").select("*").in("workspace_id", workspaceIds),
     client.from("tasks").select("*").in("workspace_id", workspaceIds),
     client.from("tags").select("*").in("workspace_id", workspaceIds),
@@ -85,7 +77,6 @@ export async function fetchAppDataFromSupabase(userId: string): Promise<AppData 
   ]);
 
   const error = [
-    workspacesRes.error,
     profilesRes.error,
     projectsRes.error,
     tasksRes.error,
@@ -100,10 +91,36 @@ export async function fetchAppDataFromSupabase(userId: string): Promise<AppData 
     id: w.id,
     name: w.name,
   }));
-  const profiles = profilesRes.data || [];
-  if (!profiles.some((profile: any) => profile.id === ownProfile.id)) profiles.push(ownProfile);
-
-  const users: User[] = profiles.map(mapProfile);
+  const workspaceMemberships: WorkspaceMembership[] = (membershipsRes.data || []).map(
+    (membership: any) => ({
+      workspaceId: membership.workspace_id,
+      userId: membership.user_id,
+      role: membership.role === "admin" ? "admin" : "member",
+      status: membership.status === "inactive" ? "inactive" : "active",
+      createdAt: membership.created_at,
+    }),
+  );
+  const activeWorkspaceId = ownMemberships[0].workspace_id;
+  const users: User[] = (profilesRes.data || []).map((profile: any) => {
+    const memberships = workspaceMemberships.filter(
+      (membership) => membership.userId === profile.id,
+    );
+    const membership =
+      memberships.find((candidate) => candidate.workspaceId === activeWorkspaceId) ||
+      memberships[0];
+    return {
+      id: profile.id,
+      workspaceIds: memberships.map((candidate) => candidate.workspaceId),
+      name: profile.name,
+      email: profile.email,
+      role: membership?.role || "member",
+      status: membership?.status || "inactive",
+      joinedAt: profile.joined_at,
+      avatar: profile.avatar || "",
+      timezone: profile.timezone || "UTC",
+      timeFormat: profile.time_format === "24h" ? "24h" : "12h",
+    };
+  });
 
   const projects: Project[] = (projectsRes.data || []).map((p: any) => ({
     id: p.id,
@@ -180,7 +197,8 @@ export async function fetchAppDataFromSupabase(userId: string): Promise<AppData 
   return {
     users,
     workspaces,
-    activeWorkspaceId: workspaces[0]?.id || workspaceIds[0] || "",
+    activeWorkspaceId,
+    workspaceMemberships,
     projects,
     tasks,
     tags,
@@ -190,27 +208,65 @@ export async function fetchAppDataFromSupabase(userId: string): Promise<AppData 
   };
 }
 
-export async function syncUserToSupabase(user: User, workspace?: Workspace) {
+export async function registerWorkspaceAccount(user: User, workspace: Workspace) {
   const client = supabase;
   if (!client) throw new Error("Supabase is not configured.");
-  if (workspace) {
-    const { error } = await client.from("workspaces").upsert({
-      id: workspace.id,
-      name: workspace.name,
-    });
-    if (error) throw error;
-  }
-  const { error } = await client.from("profiles").upsert({
-    id: user.id,
-    workspace_ids: user.workspaceIds,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    status: user.status,
-    joined_at: user.joinedAt,
-    avatar: user.avatar,
-    timezone: user.timezone,
-    time_format: user.timeFormat,
+  const { error } = await client.rpc("register_workspace_account", {
+    p_workspace_id: workspace.id,
+    p_workspace_name: workspace.name,
+    p_full_name: user.name,
+    p_avatar: user.avatar,
+    p_timezone: user.timezone,
+    p_time_format: user.timeFormat,
+  });
+  if (error) throw error;
+}
+
+export async function claimWorkspaceInvitesInSupabase() {
+  const client = supabase;
+  if (!client) throw new Error("Supabase is not configured.");
+  const { error } = await client.rpc("claim_workspace_invites");
+  if (error) throw error;
+}
+
+export async function updateWorkspaceMemberInSupabase(
+  workspaceId: string,
+  user: Pick<User, "id" | "role"> & { status: "active" | "inactive" },
+) {
+  const client = supabase;
+  if (!client) throw new Error("Supabase is not configured.");
+  const { error } = await client.rpc("update_workspace_member", {
+    p_workspace_id: workspaceId,
+    p_user_id: user.id,
+    p_role: user.role,
+    p_status: user.status,
+  });
+  if (error) throw error;
+}
+
+export async function updateMyProfileInSupabase(user: User) {
+  const client = supabase;
+  if (!client) throw new Error("Supabase is not configured.");
+  const { error } = await client.rpc("update_my_profile", {
+    p_full_name: user.name,
+    p_avatar: user.avatar,
+    p_timezone: user.timezone,
+    p_time_format: user.timeFormat,
+  });
+  if (error) throw error;
+}
+
+export async function inviteWorkspaceMemberInSupabase(
+  workspaceId: string,
+  email: string,
+  role: User["role"],
+) {
+  const client = supabase;
+  if (!client) throw new Error("Supabase is not configured.");
+  const { error } = await client.rpc("invite_workspace_member", {
+    p_workspace_id: workspaceId,
+    p_email: email,
+    p_role: role,
   });
   if (error) throw error;
 }
@@ -301,25 +357,28 @@ export async function syncActiveTimerToSupabase(timer?: ActiveTimer, userId?: st
     if (error) throw error;
     return;
   }
-  const { error } = await client.from("active_timers").upsert({
-    id: timer.id,
-    workspace_id: timer.workspaceId,
-    user_id: timer.userId,
-    description: timer.description,
-    project_id: timer.projectId || null,
-    task_id: timer.taskId || null,
-    tag_ids: timer.tagIds,
-    started_at: timer.startedAt,
-    status: timer.status,
-    segments: timer.segments,
-  });
+  const { error } = await client.from("active_timers").upsert(
+    {
+      id: timer.id,
+      workspace_id: timer.workspaceId,
+      user_id: timer.userId,
+      description: timer.description,
+      project_id: timer.projectId || null,
+      task_id: timer.taskId || null,
+      tag_ids: timer.tagIds,
+      started_at: timer.startedAt,
+      status: timer.status,
+      segments: timer.segments,
+    },
+    { onConflict: "user_id" },
+  );
   if (error) throw error;
 }
 
 export async function syncAuditEventToSupabase(event: AuditEvent) {
   const client = supabase;
   if (!client) throw new Error("Supabase is not configured.");
-  const { error } = await client.from("audit_events").upsert({
+  const { error } = await client.from("audit_events").insert({
     id: event.id,
     workspace_id: event.workspaceId,
     actor_id: event.actorId,

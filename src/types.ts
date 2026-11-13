@@ -29,6 +29,14 @@ export interface Workspace {
   name: string;
 }
 
+export interface WorkspaceMembership {
+  workspaceId: string;
+  userId: string;
+  role: Role;
+  status: "active" | "inactive";
+  createdAt: string;
+}
+
 export interface Project {
   id: string;
   workspaceId: string;
@@ -109,6 +117,7 @@ export interface AppData {
   users: User[];
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  workspaceMemberships?: WorkspaceMembership[];
   projects: Project[];
   tasks: Task[];
   tags: Tag[];

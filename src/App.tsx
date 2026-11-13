@@ -52,6 +52,10 @@ import {
 import { AppStoreProvider, useAppStore } from "./store/AppStore";
 import { entriesToCsv, filterEntries, type EntryFilters } from "./lib/domain";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
+import {
+  claimWorkspaceInvitesInSupabase,
+  fetchAppDataFromSupabase,
+} from "./lib/supabaseSync";
 import type { AppData, EntryInput, Page, Project, Tag, Task, TimeEntry, User } from "./types";
 
 const id = (prefix: string) => `${prefix}-${Date.now()}`;
@@ -454,7 +458,7 @@ function AuthScreen({
   initialMode: AuthMode;
   navigate: (path: string) => void;
 }) {
-  const { data, login, register, dataError } = useAppStore();
+  const { login, register, dataError } = useAppStore();
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState(() => {
@@ -599,32 +603,17 @@ function AuthScreen({
 
             if (authData.user) {
               const userName = authData.user.user_metadata?.full_name || email.split("@")[0];
-              const existingUser = data.users.find((user) => user.id === authData.user.id);
-              if (existingUser) {
-                login(email);
-              } else {
-                const { data: profile, error: profileError } = await client
-                  .from("profiles")
-                  .select("*")
-                  .eq("id", authData.user.id)
-                  .maybeSingle();
-                if (profileError) throw profileError;
-                if (profile) {
-                  login(email, {
-                    id: profile.id,
-                    workspaceIds: profile.workspace_ids || [],
-                    name: profile.name || userName,
-                    email: profile.email || email,
-                    role: profile.role === "admin" ? "admin" : "member",
-                    status: profile.status || "active",
-                    joinedAt: profile.joined_at || new Date().toISOString(),
-                    avatar: profile.avatar || userName.slice(0, 2).toUpperCase(),
-                    timezone: profile.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-                    timeFormat: profile.time_format === "24h" ? "24h" : "12h",
-                  });
-                } else {
-                  await register(userName, email, authData.user.id);
+              await claimWorkspaceInvitesInSupabase();
+              const remoteData = await fetchAppDataFromSupabase(authData.user.id);
+              const existingUser = remoteData?.users.find(
+                (user) => user.id === authData.user.id,
+              );
+              if (remoteData && existingUser) {
+                if (!login(email, existingUser, remoteData)) {
+                  throw new Error("This account does not have active access to a workspace.");
                 }
+              } else {
+                await register(userName, email, authData.user.id);
               }
               navigate("/dashboard");
             }
@@ -2805,13 +2794,35 @@ function downloadBlob(blob: Blob, name: string) {
 }
 
 function TeamPage() {
-  const { data, currentUser, saveUser, addAudit } = useAppStore();
+  const { data, currentUser, saveUser, inviteMember, addAudit } = useAppStore();
   const [search, setSearch] = useState("");
   const [invite, setInvite] = useState(false);
   const [detail, setDetail] = useState<User | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<User["role"]>("member");
+  const [inviteError, setInviteError] = useState("");
+  const [inviteNotice, setInviteNotice] = useState("");
+  const [inviteLoading, setInviteLoading] = useState(false);
   const users = data.users.filter((user) =>
     `${user.name} ${user.email}`.toLowerCase().includes(search.toLowerCase()),
   );
+  const submitInvite = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setInviteError("");
+    setInviteLoading(true);
+    try {
+      await inviteMember(inviteEmail, inviteRole);
+      setInviteNotice(
+        `Invitation saved for ${inviteEmail}. Ask them to sign up using this email address.`,
+      );
+      setInviteEmail("");
+      setInvite(false);
+    } catch (error) {
+      setInviteError(error instanceof Error ? error.message : "Could not save the invitation.");
+    } finally {
+      setInviteLoading(false);
+    }
+  };
   const totalFor = (userId: string) =>
     data.entries
       .filter((entry) => entry.userId === userId)
@@ -2831,6 +2842,7 @@ function TeamPage() {
           <UserPlus size={16} /> Invite member
         </Button>
       </div>
+      {inviteNotice && <p role="status">{inviteNotice}</p>}
       <section className="card table-card">
         <div className="table-scroll">
           <table>
@@ -2900,19 +2912,42 @@ function TeamPage() {
       </section>
       {invite && (
         <Modal
-          title="Invitations need server setup"
-          subtitle="A secure Supabase invitation function is not configured."
+          title="Invite a team member"
+          subtitle="They must create their account with the invited email address."
           onClose={() => setInvite(false)}
         >
-          <p>
-            Nothing was added. Configure an Edge Function to send invitations without exposing a
-            service key.
-          </p>
-          <footer className="modal-actions">
-            <Button type="button" onClick={() => setInvite(false)}>
-              Close
-            </Button>
-          </footer>
+          <form className="modal-form" onSubmit={submitInvite}>
+            <label className="field">
+              <span>Email address</span>
+              <input
+                type="email"
+                required
+                value={inviteEmail}
+                onChange={(event) => setInviteEmail(event.target.value)}
+                autoComplete="email"
+              />
+            </label>
+            <label className="field">
+              <span>Workspace role</span>
+              <select
+                value={inviteRole}
+                onChange={(event) => setInviteRole(event.target.value as User["role"])}
+              >
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+            {inviteError && <p role="alert">{inviteError}</p>}
+            <p>The invite is stored securely. Send the sign-up instructions to the invitee.</p>
+            <footer className="modal-actions">
+              <Button type="button" variant="secondary" onClick={() => setInvite(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={inviteLoading}>
+                {inviteLoading ? "Saving..." : "Save invitation"}
+              </Button>
+            </footer>
+          </form>
         </Modal>
       )}
       {detail && (

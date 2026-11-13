@@ -472,6 +472,17 @@ function AuthScreen({
   } | null>(null);
   const [otpCode, setOtpCode] = useState("");
   const [resending, setResending] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  useEffect(() => {
+    setMode(initialMode);
+  }, [initialMode]);
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldown]);
   const changeMode = (next: AuthMode) => {
     setMode(next);
     setError("");
@@ -559,6 +570,7 @@ function AuthScreen({
             }
             setLoading(false);
             setPending({ name, email, password });
+            setResendCooldown(60);
             setMode("verify");
             navigate("/verify");
           })
@@ -733,6 +745,7 @@ function AuthScreen({
                   }}
                 />
                 {error && <span style={{ color: "#ef4444", fontSize: "13px" }}>{error}</span>}
+                {notice && <span style={{ color: "#118564", fontSize: "13px" }}>{notice}</span>}
               </div>
               <Button
                 disabled={loading}
@@ -746,6 +759,7 @@ function AuthScreen({
 
                   setLoading(true);
                   setError("");
+                  setNotice("");
 
                   if (isSupabaseConfigured && supabase) {
                     try {
@@ -761,6 +775,7 @@ function AuthScreen({
                           token: cleanCode,
                           type: "email",
                         });
+                        verifyData = fallback.data;
                         verifyError = fallback.error;
                       }
 
@@ -809,25 +824,43 @@ function AuthScreen({
               >
                 <button
                   className="text-button"
-                  disabled={resending}
+                  disabled={resending || resendCooldown > 0}
                   onClick={async () => {
-                    if (!pending?.email) return;
+                    if (!pending?.email || resendCooldown > 0) return;
                     setResending(true);
+                    setError("");
+                    setNotice("");
                     try {
                       if (!supabase) throw new Error("Supabase is not configured.");
-                      await supabase.auth.resend({
+                      const { error: resendError } = await supabase.auth.resend({
                         type: "signup",
                         email: pending.email,
                       });
-                      setError("New confirmation email sent!");
-                    } catch {
-                      setError("Failed to resend confirmation email.");
+                      if (resendError) {
+                        setError(resendError.message);
+                      } else {
+                        setOtpCode("");
+                        setResendCooldown(60);
+                        setNotice(
+                          "New confirmation code sent! Use only the latest code in your inbox.",
+                        );
+                      }
+                    } catch (err) {
+                      setError(
+                        err instanceof Error
+                          ? err.message
+                          : "Failed to resend confirmation email.",
+                      );
                     } finally {
                       setResending(false);
                     }
                   }}
                 >
-                  {resending ? "Sending..." : "Resend email"}
+                  {resending
+                    ? "Sending..."
+                    : resendCooldown > 0
+                      ? `Resend code (${resendCooldown}s)`
+                      : "Resend email"}
                 </button>
                 <button
                   className="text-button"
@@ -3148,7 +3181,7 @@ function Root() {
           : path === "/verify"
             ? "verify"
             : "login";
-  return <AuthScreen key={mode} initialMode={mode} navigate={navigate} />;
+  return <AuthScreen initialMode={mode} navigate={navigate} />;
 }
 
 export default function App({

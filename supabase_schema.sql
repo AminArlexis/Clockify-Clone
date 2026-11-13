@@ -194,7 +194,9 @@ AS $$
         );
 $$;
 
-CREATE OR REPLACE FUNCTION public.claim_workspace_invites()
+DROP FUNCTION IF EXISTS public.claim_workspace_invites();
+
+CREATE FUNCTION public.claim_workspace_invites()
 RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER

@@ -1,0 +1,2 @@
+[functions.invite-workspace-member]
+verify_jwt = true

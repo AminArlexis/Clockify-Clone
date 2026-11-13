@@ -263,10 +263,8 @@ export async function inviteWorkspaceMemberInSupabase(
 ) {
   const client = supabase;
   if (!client) throw new Error("Supabase is not configured.");
-  const { error } = await client.rpc("invite_workspace_member", {
-    p_workspace_id: workspaceId,
-    p_email: email,
-    p_role: role,
+  const { error } = await client.functions.invoke("invite-workspace-member", {
+    body: { workspaceId, email, role },
   });
   if (error) throw error;
 }

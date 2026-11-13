@@ -2812,9 +2812,7 @@ function TeamPage() {
     setInviteLoading(true);
     try {
       await inviteMember(inviteEmail, inviteRole);
-      setInviteNotice(
-        `Invitation saved for ${inviteEmail}. Ask them to sign up using this email address.`,
-      );
+      setInviteNotice(`Invitation email sent to ${inviteEmail}. They should register with this address.`);
       setInviteEmail("");
       setInvite(false);
     } catch (error) {
@@ -2913,7 +2911,7 @@ function TeamPage() {
       {invite && (
         <Modal
           title="Invite a team member"
-          subtitle="They must create their account with the invited email address."
+          subtitle="An email with a sign-up link will be sent to the invitee."
           onClose={() => setInvite(false)}
         >
           <form className="modal-form" onSubmit={submitInvite}>
@@ -2938,13 +2936,13 @@ function TeamPage() {
               </select>
             </label>
             {inviteError && <p role="alert">{inviteError}</p>}
-            <p>The invite is stored securely. Send the sign-up instructions to the invitee.</p>
+            <p>The invitee must sign up or sign in with this email address to join the workspace.</p>
             <footer className="modal-actions">
               <Button type="button" variant="secondary" onClick={() => setInvite(false)}>
                 Cancel
               </Button>
               <Button type="submit" disabled={inviteLoading}>
-                {inviteLoading ? "Saving..." : "Save invitation"}
+                {inviteLoading ? "Sending..." : "Send invitation"}
               </Button>
             </footer>
           </form>

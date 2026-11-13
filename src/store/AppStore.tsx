@@ -7,12 +7,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { createMockData } from "../data/mock";
 import { completeActiveTimer, pauseActiveTimer, resumeActiveTimer } from "../lib/domain";
-import { isSupabaseConfigured } from "../lib/supabase";
+import { isSupabaseConfigured, supabase } from "../lib/supabase";
 import {
   fetchAppDataFromSupabase,
-  seedInitialDataToSupabase,
   syncUserToSupabase,
   syncEntryToSupabase,
   deleteEntryFromSupabase,
@@ -35,21 +33,30 @@ import type {
   User,
 } from "../types";
 
-const DATA_KEY = "timeflow-prototype-data-v2";
-const SESSION_KEY = "timeflow-prototype-session";
-const SESSION_EXPIRY_KEY = "timeflow-prototype-session-expiry";
-const SESSION_LENGTH = 8 * 60 * 60 * 1000;
+const LEGACY_DATA_KEY = "timeflow-prototype-data-v2";
+const LEGACY_SESSION_KEY = "timeflow-prototype-session";
+const LEGACY_SESSION_EXPIRY_KEY = "timeflow-prototype-session-expiry";
 const uid = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+const emptyData: AppData = {
+  users: [],
+  workspaces: [],
+  activeWorkspaceId: "",
+  projects: [],
+  tasks: [],
+  tags: [],
+  entries: [],
+  audit: [],
+};
 
 interface AppStoreValue {
   data: AppData;
   currentUser?: User;
-  sessionExpired: boolean;
+  dataError: string;
   timerError: string;
   timerBusy: boolean;
   login: (email: string, userOverride?: User) => boolean;
-  register: (name: string, email: string, customId?: string) => User;
-  logout: () => void;
+  register: (name: string, email: string, customId?: string) => Promise<User>;
+  logout: () => Promise<void>;
   switchWorkspace: (id: string) => void;
   startTimer: (input: Pick<ActiveTimer, "description" | "projectId" | "taskId" | "tagIds">) => void;
   pauseTimer: () => void;
@@ -72,63 +79,89 @@ interface AppStoreValue {
   saveUser: (user: User) => void;
   updateProfile: (patch: Partial<User>) => void;
   addAudit: (action: string, target: string, detail: string) => void;
-  resetDemo: () => void;
 }
 
 const AppStoreContext = createContext<AppStoreValue | null>(null);
 
-function loadData() {
-  try {
-    const raw = localStorage.getItem(DATA_KEY);
-    return raw ? (JSON.parse(raw) as AppData) : createMockData();
-  } catch {
-    return createMockData();
-  }
-}
-
-export function AppStoreProvider({ children }: { children: ReactNode }) {
-  const [data, setData] = useState<AppData>(loadData);
-  const initialSession = localStorage.getItem(SESSION_KEY) || "";
-  const initialExpiry = Number(localStorage.getItem(SESSION_EXPIRY_KEY) || 0);
-  const [sessionId, setSessionId] = useState(() =>
-    initialExpiry > Date.now() ? initialSession : "",
-  );
-  const [sessionExpired, setSessionExpired] = useState(() =>
-    Boolean(initialSession && initialExpiry <= Date.now()),
-  );
+export function AppStoreProvider({
+  children,
+  initialData,
+  initialSessionId,
+}: {
+  children: ReactNode;
+  initialData?: AppData;
+  initialSessionId?: string;
+}) {
+  const [data, setData] = useState<AppData>(initialData || emptyData);
+  const [sessionId, setSessionId] = useState(initialSessionId || "");
+  const [dataError, setDataError] = useState("");
   const [timerError, setTimerError] = useState("");
   const [timerBusy, setTimerBusy] = useState(false);
   const timerLock = useRef(false);
   const lastTimerAction = useRef<"pause" | "resume" | "stop" | null>(null);
   const currentUser = data.users.find((user) => user.id === sessionId);
 
-  // Sync with Supabase on mount
   useEffect(() => {
-    if (!isSupabaseConfigured) return;
+    localStorage.removeItem(LEGACY_DATA_KEY);
+    localStorage.removeItem(LEGACY_SESSION_KEY);
+    localStorage.removeItem(LEGACY_SESSION_EXPIRY_KEY);
+  }, []);
 
+  useEffect(() => {
+    if (initialData || initialSessionId || !supabase) return;
+    let active = true;
+    void supabase.auth
+      .getSession()
+      .then(({ data: sessionData, error }) => {
+        if (!active) return;
+        if (error) {
+          setDataError(`Could not restore Supabase session: ${error.message}`);
+          return;
+        }
+        setSessionId(sessionData.session?.user.id || "");
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          const message = error instanceof Error ? error.message : "Unknown Supabase error";
+          setDataError(`Could not restore Supabase session: ${message}`);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [initialData, initialSessionId]);
+
+  useEffect(() => {
+    if (initialData) return;
+    if (!isSupabaseConfigured || !supabase || !sessionId) {
+      setData(emptyData);
+      return;
+    }
     let isMounted = true;
     async function initSupabase() {
       try {
-        const remoteData = await fetchAppDataFromSupabase();
+        const remoteData = await fetchAppDataFromSupabase(sessionId);
         if (!isMounted) return;
-
-        if (remoteData && remoteData.workspaces.length > 0) {
+        if (remoteData) {
           setData(remoteData);
+          setDataError("");
         } else {
-          // Empty database: seed initial mock data to Supabase
-          const fallbackData = loadData();
-          await seedInitialDataToSupabase(fallbackData);
+          setData(emptyData);
+          setDataError("");
         }
-      } catch (e) {
-        console.error("Supabase sync initialization error:", e);
+      } catch (error) {
+        if (!isMounted) return;
+        const message = error instanceof Error ? error.message : "Unknown Supabase error";
+        setDataError(`Could not load workspace data from Supabase: ${message}`);
       }
     }
 
-    initSupabase();
+    void initSupabase();
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [sessionId, initialData]);
   const auditEvent = (action: string, target: string, detail: string): AuditEvent => ({
     id: uid("audit"),
     workspaceId: data.activeWorkspaceId,
@@ -139,31 +172,12 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     createdAt: new Date().toISOString(),
   });
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(DATA_KEY, JSON.stringify(data));
-    } catch {
-      setTimerError("Changes could not be saved in this browser. Free storage and retry.");
-    }
-  }, [data]);
-  useEffect(() => {
-    if (sessionId) {
-      localStorage.setItem(SESSION_KEY, sessionId);
-      localStorage.setItem(SESSION_EXPIRY_KEY, String(Date.now() + SESSION_LENGTH));
-    } else {
-      localStorage.removeItem(SESSION_KEY);
-      localStorage.removeItem(SESSION_EXPIRY_KEY);
-    }
-  }, [sessionId]);
-  useEffect(() => {
-    const check = window.setInterval(() => {
-      if (sessionId && Number(localStorage.getItem(SESSION_EXPIRY_KEY) || 0) <= Date.now()) {
-        setSessionId("");
-        setSessionExpired(true);
-      }
-    }, 30_000);
-    return () => window.clearInterval(check);
-  }, [sessionId]);
+  const reportSyncError = (action: string, operation: Promise<void>) => {
+    void operation.catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "Unknown Supabase error";
+      setDataError(`Could not ${action}: ${message}`);
+    });
+  };
 
   const addAudit = (action: string, target: string, detail: string) => {
     if (!sessionId) return;
@@ -176,41 +190,46 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       detail,
       createdAt: new Date().toISOString(),
     };
-    void syncAuditEventToSupabase(event);
+    reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
     setData((current) => ({ ...current, audit: [event, ...current.audit] }));
   };
 
   const login = (email: string, userOverride?: User) => {
-    const user = userOverride || data.users.find(
-      (candidate) =>
-        candidate.email.toLowerCase() === email.toLowerCase() && candidate.status === "active",
-    );
+    const user =
+      userOverride ||
+      data.users.find(
+        (candidate) =>
+          candidate.email.toLowerCase() === email.toLowerCase() && candidate.status === "active",
+      );
     if (!user) return false;
     if (user.workspaceIds.length > 0 && !user.workspaceIds.includes(data.activeWorkspaceId)) {
       setData((current) => ({
         ...current,
-        users: current.users.some(u => u.id === user.id) ? current.users : [...current.users, user],
-        activeWorkspaceId: user.workspaceIds[0]
+        users: current.users.some((u) => u.id === user.id)
+          ? current.users
+          : [...current.users, user],
+        activeWorkspaceId: user.workspaceIds[0],
       }));
     } else {
       setData((current) => ({
         ...current,
-        users: current.users.some(u => u.id === user.id) ? current.users : [...current.users, user],
+        users: current.users.some((u) => u.id === user.id)
+          ? current.users
+          : [...current.users, user],
       }));
     }
-    setSessionExpired(false);
     setSessionId(user.id);
     return true;
   };
 
-  const register = (name: string, email: string, customId?: string): User => {
+  const register = async (name: string, email: string, customId?: string): Promise<User> => {
     const workspaceId = uid("workspace");
     const user: User = {
       id: customId || uid("user"),
       workspaceIds: [workspaceId],
       name,
       email,
-      role: "member",
+      role: "admin",
       status: "active",
       joinedAt: new Date().toISOString(),
       avatar: name
@@ -223,18 +242,14 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       timeFormat: "12h",
     };
     const workspace = { id: workspaceId, name: `${name.split(" ")[0]}'s Workspace` };
+    await syncUserToSupabase(user, workspace);
     setData((current) => ({
       ...current,
-      users: [...current.users.filter(u => u.id !== user.id), user],
-      workspaces: [
-        ...current.workspaces.filter(w => w.id !== workspace.id),
-        workspace,
-      ],
+      users: [...current.users.filter((u) => u.id !== user.id), user],
+      workspaces: [...current.workspaces.filter((w) => w.id !== workspace.id), workspace],
       activeWorkspaceId: workspaceId,
     }));
-    setSessionExpired(false);
     setSessionId(user.id);
-    void syncUserToSupabase(user, workspace);
     return user;
   };
 
@@ -269,7 +284,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       ...current,
       activeTimer: newTimer,
     }));
-    void syncActiveTimerToSupabase(newTimer);
+    reportSyncError("save timer to Supabase", syncActiveTimerToSupabase(newTimer));
     queueMicrotask(() => {
       timerLock.current = false;
       setTimerBusy(false);
@@ -291,12 +306,12 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       try {
         if (action === "pause") {
           const paused = pauseActiveTimer(timer);
-          void syncActiveTimerToSupabase(paused);
+          reportSyncError("save timer to Supabase", syncActiveTimerToSupabase(paused));
           return { ...current, activeTimer: paused };
         }
         if (action === "resume") {
           const resumed = resumeActiveTimer(timer);
-          void syncActiveTimerToSupabase(resumed);
+          reportSyncError("save timer to Supabase", syncActiveTimerToSupabase(resumed));
           return { ...current, activeTimer: resumed };
         }
         const entry = completeActiveTimer(timer);
@@ -304,9 +319,12 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           ...auditEvent("Stopped timer", entry.description, "Saved timer entry"),
           workspaceId: timer.workspaceId,
         };
-        void syncActiveTimerToSupabase(undefined);
-        void syncEntryToSupabase(entry);
-        void syncAuditEventToSupabase(event);
+        reportSyncError(
+          "remove timer from Supabase",
+          syncActiveTimerToSupabase(undefined, timer.userId),
+        );
+        reportSyncError("save time entry to Supabase", syncEntryToSupabase(entry));
+        reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
         return {
           ...current,
           activeTimer: undefined,
@@ -381,8 +399,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         updatedValue: existing ? JSON.stringify(entry) : undefined,
         createdAt: new Date().toISOString(),
       };
-      void syncEntryToSupabase(entry as TimeEntry);
-      void syncAuditEventToSupabase(event);
+      reportSyncError("save time entry to Supabase", syncEntryToSupabase(entry as TimeEntry));
+      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
       return { ...current, entries, audit: [event, ...current.audit] };
     });
 
@@ -395,11 +413,11 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         actorId: sessionId,
         action: "Deleted time entry",
         target: target?.description || "Time entry",
-        detail: "Entry removed from prototype data",
+        detail: "Entry removed from the workspace",
         createdAt: new Date().toISOString(),
       };
-      void deleteEntryFromSupabase(id);
-      void syncAuditEventToSupabase(event);
+      reportSyncError("delete time entry from Supabase", deleteEntryFromSupabase(id));
+      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
       return {
         ...current,
         entries: current.entries.filter((entry) => entry.id !== id),
@@ -415,9 +433,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         workspaceId: project.workspaceId || current.activeWorkspaceId,
         createdAt: project.createdAt || new Date().toISOString(),
       };
-      const event = auditEvent(exists ? "Updated project" : "Created project", next.name, next.description);
-      void syncProjectToSupabase(next as Project);
-      void syncAuditEventToSupabase(event);
+      const event = auditEvent(
+        exists ? "Updated project" : "Created project",
+        next.name,
+        next.description,
+      );
+      reportSyncError("save project to Supabase", syncProjectToSupabase(next as Project));
+      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
       return {
         ...current,
         projects: exists
@@ -432,14 +454,17 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       const project = current.projects.find((candidate) => candidate.id === id);
       const nextStatus = project?.status === "active" ? "archived" : "active";
       if (project) {
-        void syncProjectToSupabase({ ...project, status: nextStatus });
+        reportSyncError(
+          "update project in Supabase",
+          syncProjectToSupabase({ ...project, status: nextStatus }),
+        );
       }
       const event = auditEvent(
         nextStatus === "archived" ? "Archived project" : "Restored project",
         project?.name || "Project",
         `Status changed to ${nextStatus}`,
       );
-      void syncAuditEventToSupabase(event);
+      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
       return {
         ...current,
         projects: current.projects.map((candidate) =>
@@ -465,8 +490,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         task.name,
         task.completed ? "Marked complete" : "Task saved",
       );
-      void syncTaskToSupabase(task);
-      void syncAuditEventToSupabase(event);
+      reportSyncError("save task to Supabase", syncTaskToSupabase(task));
+      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
       return {
         ...current,
         tasks: exists
@@ -479,9 +504,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const saveTag = (tag: Tag) =>
     setData((current) => {
       const exists = current.tags.some((candidate) => candidate.id === tag.id);
-      const event = auditEvent(exists ? "Updated tag" : "Created tag", tag.name, `Color ${tag.color}`);
-      void syncTagToSupabase(tag);
-      void syncAuditEventToSupabase(event);
+      const event = auditEvent(
+        exists ? "Updated tag" : "Created tag",
+        tag.name,
+        `Color ${tag.color}`,
+      );
+      reportSyncError("save tag to Supabase", syncTagToSupabase(tag));
+      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
       return {
         ...current,
         tags: exists
@@ -494,9 +523,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const deleteTag = (id: string) =>
     setData((current) => {
       const tag = current.tags.find((candidate) => candidate.id === id);
-      const event = auditEvent("Deleted tag", tag?.name || "Tag", "Removed tag from all time entries");
-      void deleteTagFromSupabase(id);
-      void syncAuditEventToSupabase(event);
+      const event = auditEvent(
+        "Deleted tag",
+        tag?.name || "Tag",
+        "Removed tag from all time entries",
+      );
+      reportSyncError("delete tag from Supabase", deleteTagFromSupabase(id));
+      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
       return {
         ...current,
         tags: current.tags.filter((candidate) => candidate.id !== id),
@@ -510,7 +543,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   const saveUser = (user: User) =>
     setData((current) => {
-      void syncUserToSupabase(user);
+      reportSyncError("save profile to Supabase", syncUserToSupabase(user));
       return {
         ...current,
         users: current.users.some((candidate) => candidate.id === user.id)
@@ -523,7 +556,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     setData((current) => {
       const updatedUser = current.users.find((user) => user.id === sessionId);
       if (updatedUser) {
-        void syncUserToSupabase({ ...updatedUser, ...patch });
+        reportSyncError(
+          "update profile in Supabase",
+          syncUserToSupabase({ ...updatedUser, ...patch }),
+        );
       }
       return {
         ...current,
@@ -552,14 +588,22 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     () => ({
       data: scopedData,
       currentUser,
-      sessionExpired,
+      dataError,
       timerError,
       timerBusy,
       login,
       register,
-      logout: () => {
+      logout: async () => {
+        if (supabase) {
+          const { error } = await supabase.auth.signOut();
+          if (error) {
+            setDataError(`Could not sign out from Supabase: ${error.message}`);
+            return;
+          }
+        }
         setSessionId("");
-        setSessionExpired(false);
+        setData(emptyData);
+        setDataError("");
       },
       switchWorkspace: (activeWorkspaceId) =>
         setData((current) =>
@@ -585,12 +629,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       saveUser,
       updateProfile,
       addAudit,
-      resetDemo: () => {
-        localStorage.removeItem(DATA_KEY);
-        setData(createMockData());
-      },
     }),
-    [scopedData, currentUser, sessionExpired, timerError, timerBusy],
+    [scopedData, currentUser, dataError, timerError, timerBusy],
   );
 
   return <AppStoreContext.Provider value={value}>{children}</AppStoreContext.Provider>;

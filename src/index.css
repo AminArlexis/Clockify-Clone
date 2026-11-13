@@ -1765,56 +1765,6 @@
     margin: 13px 0 0 auto;
     font-size: 10px;
   }
-  .divider {
-    position: relative;
-    margin: 23px 0 17px;
-    border-top: 1px solid #e8ebf0;
-    text-align: center;
-  }
-  .divider span {
-    position: relative;
-    top: -8px;
-    padding: 0 9px;
-    color: #9aa1af;
-    background: white;
-    font-size: 9px;
-  }
-  .demo-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-  }
-  .demo-user {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 9px;
-    border: 1px solid #e2e5eb;
-    border-radius: 9px;
-    text-align: left;
-  }
-  .demo-user:hover {
-    border-color: #aeb8ee;
-    background: #fafaff;
-  }
-  .demo-user > span:nth-child(2) {
-    display: flex;
-    min-width: 0;
-    flex: 1;
-    flex-direction: column;
-  }
-  .demo-user strong {
-    overflow: hidden;
-    font-size: 9px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .demo-user small {
-    margin-top: 3px;
-    color: #969dab;
-    font-size: 8px;
-    text-transform: capitalize;
-  }
   .auth-switch {
     margin-top: 22px;
     color: #8991a2;
@@ -2628,9 +2578,6 @@
   }
   .auth-panel {
     padding: 28px 20px;
-  }
-  .demo-grid {
-    grid-template-columns: 1fr;
   }
   .danger-zone {
     align-items: flex-start;

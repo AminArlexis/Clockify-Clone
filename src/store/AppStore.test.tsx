@@ -1,18 +1,22 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
-import { createMockData } from "../data/mock";
+import { fetchAppDataFromSupabase } from "../lib/supabaseSync";
+import { createTestData } from "../test/fixtures";
 import { AppStoreProvider, useAppStore } from "./AppStore";
 
-const DATA_KEY = "timeflow-prototype-data-v2";
-const SESSION_KEY = "timeflow-prototype-session";
-const EXPIRY_KEY = "timeflow-prototype-session-expiry";
-
-function seedSession(userId = "u1") {
-  localStorage.setItem(DATA_KEY, JSON.stringify(createMockData()));
-  localStorage.setItem(SESSION_KEY, userId);
-  localStorage.setItem(EXPIRY_KEY, String(Date.now() + 60_000));
-}
+vi.mock("../lib/supabaseSync", () => ({
+  fetchAppDataFromSupabase: vi.fn(),
+  syncUserToSupabase: vi.fn().mockResolvedValue(undefined),
+  syncEntryToSupabase: vi.fn().mockResolvedValue(undefined),
+  deleteEntryFromSupabase: vi.fn().mockResolvedValue(undefined),
+  syncProjectToSupabase: vi.fn().mockResolvedValue(undefined),
+  syncTaskToSupabase: vi.fn().mockResolvedValue(undefined),
+  syncTagToSupabase: vi.fn().mockResolvedValue(undefined),
+  deleteTagFromSupabase: vi.fn().mockResolvedValue(undefined),
+  syncActiveTimerToSupabase: vi.fn().mockResolvedValue(undefined),
+  syncAuditEventToSupabase: vi.fn().mockResolvedValue(undefined),
+}));
 
 function StoreHarness() {
   const store = useAppStore();
@@ -23,6 +27,7 @@ function StoreHarness() {
       <output data-testid="segments">{store.data.activeTimer?.segments.length || 0}</output>
       <output data-testid="entries">{store.data.entries.length}</output>
       <output data-testid="error">{store.timerError}</output>
+      <output data-testid="data-error">{store.dataError}</output>
       <button onClick={() => store.startTimer({ description: "Test timer", tagIds: [] })}>
         start
       </button>
@@ -50,12 +55,32 @@ function StoreHarness() {
 describe("shared application store", () => {
   beforeEach(() => {
     localStorage.clear();
-    seedSession();
+  });
+
+  it("does not restore legacy browser demo data", () => {
+    localStorage.setItem("timeflow-prototype-data-v2", JSON.stringify(createTestData()));
+    render(
+      <AppStoreProvider>
+        <StoreHarness />
+      </AppStoreProvider>,
+    );
+    expect(screen.getByTestId("entries").textContent).toBe("0");
+  });
+
+  it("treats a missing profile as an empty workspace instead of a login error", async () => {
+    vi.mocked(fetchAppDataFromSupabase).mockResolvedValue(null);
+    render(
+      <AppStoreProvider initialSessionId="new-auth-user">
+        <StoreHarness />
+      </AppStoreProvider>,
+    );
+    await waitFor(() => expect(fetchAppDataFromSupabase).toHaveBeenCalledWith("new-auth-user"));
+    expect(screen.getByTestId("data-error").textContent).toBe("");
   });
 
   it("starts, pauses, resumes, and stops one timer without duplicates", async () => {
     render(
-      <AppStoreProvider>
+      <AppStoreProvider initialData={createTestData()} initialSessionId="u1">
         <StoreHarness />
       </AppStoreProvider>,
     );
@@ -78,7 +103,7 @@ describe("shared application store", () => {
 
   it("switches workspaces and isolates visible records", () => {
     render(
-      <AppStoreProvider>
+      <AppStoreProvider initialData={createTestData()} initialSessionId="u1">
         <StoreHarness />
       </AppStoreProvider>,
     );
@@ -98,19 +123,18 @@ describe("role-based interface", () => {
   });
 
   it("shows admin navigation only to admins", () => {
-    seedSession("u1");
-    const { unmount } = render(<App />);
+    const data = createTestData();
+    const { unmount } = render(<App initialData={data} initialSessionId="u1" />);
     expect(screen.getByRole("button", { name: "Team" })).toBeInTheDocument();
     unmount();
     localStorage.clear();
-    seedSession("u2");
-    render(<App />);
+    render(<App initialData={createTestData()} initialSessionId="u2" />);
     expect(screen.queryByRole("button", { name: "Team" })).not.toBeInTheDocument();
   });
 
   it("renders the public landing page at the root path", () => {
     localStorage.clear();
-    render(<App />);
+    render(<App initialData={createTestData()} />);
     expect(
       screen.getByRole("heading", { name: /time tracking that gets out of your way/i }),
     ).toBeInTheDocument();

@@ -52,7 +52,7 @@ import {
 import { AppStoreProvider, useAppStore } from "./store/AppStore";
 import { entriesToCsv, filterEntries, type EntryFilters } from "./lib/domain";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
-import type { EntryInput, Page, Project, Tag, Task, TimeEntry, User } from "./types";
+import type { AppData, EntryInput, Page, Project, Tag, Task, TimeEntry, User } from "./types";
 
 const id = (prefix: string) => `${prefix}-${Date.now()}`;
 const dateKey = (date: Date | string) => {
@@ -272,7 +272,7 @@ function PublicLanding({ navigate }: { navigate: (path: string) => void }) {
                 Create your workspace <ChevronRight size={16} />
               </Button>
               <Button variant="secondary" onClick={() => navigate("/login")}>
-                Explore the demo
+                Log in
               </Button>
             </div>
             <div className="hero-proof">
@@ -282,17 +282,14 @@ function PublicLanding({ navigate }: { navigate: (path: string) => void }) {
               <span>
                 <Check size={14} /> Ready in minutes
               </span>
-              <span>
-                <Check size={14} /> Browser-based demo
-              </span>
             </div>
           </div>
-          <div className="product-window" aria-label="TimeFlow product preview">
+          <div className="product-window" aria-label="TimeFlow workspace overview">
             <div className="window-bar">
               <i />
               <i />
               <i />
-              <span>Northstar Studio / Dashboard</span>
+              <span>TimeFlow / Workspace</span>
             </div>
             <div className="preview-shell">
               <aside>
@@ -310,34 +307,29 @@ function PublicLanding({ navigate }: { navigate: (path: string) => void }) {
               <div className="preview-content">
                 <header>
                   <div>
-                    <small>GOOD MORNING</small>
-                    <strong>Your week is moving forward.</strong>
+                    <small>YOUR WORKSPACE</small>
+                    <strong>Projects, time, and reports in one place.</strong>
                   </div>
-                  <span className="preview-avatar">OM</span>
+                  <Clock3 size={20} />
                 </header>
-                <div className="preview-kpis">
-                  <div>
-                    <small>Today</small>
-                    <strong>3h 20m</strong>
-                  </div>
-                  <div>
-                    <small>This week</small>
-                    <strong>22h 45m</strong>
-                  </div>
-                  <div>
-                    <small>Sessions</small>
-                    <strong>14</strong>
-                  </div>
-                </div>
                 <div className="preview-chart">
                   <div className="preview-chart-title">
-                    <strong>Weekly activity</strong>
-                    <span>This week</span>
+                    <strong>Connected tools</strong>
+                    <span>Supabase</span>
                   </div>
-                  <div className="preview-bars">
-                    {[42, 72, 55, 88, 64, 28, 12].map((height, index) => (
-                      <i key={index} style={{ height: `${height}%` }} />
-                    ))}
+                  <div className="preview-kpis">
+                    <div>
+                      <small>Track</small>
+                      <strong>Time</strong>
+                    </div>
+                    <div>
+                      <small>Organize</small>
+                      <strong>Projects</strong>
+                    </div>
+                    <div>
+                      <small>Review</small>
+                      <strong>Reports</strong>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -420,9 +412,9 @@ function PublicLanding({ navigate }: { navigate: (path: string) => void }) {
             <span className="benefit-icon">
               <Activity size={22} />
             </span>
-            <small>FOCUS SCORE</small>
-            <strong>86%</strong>
-            <p>Up 12% from last month</p>
+            <small>YOUR WORKSPACE</small>
+            <strong>In sync</strong>
+            <p>Use your own projects and time records.</p>
             <div className="focus-line">
               <i />
             </div>
@@ -431,7 +423,7 @@ function PublicLanding({ navigate }: { navigate: (path: string) => void }) {
         <section className="landing-cta">
           <span className="eyebrow">Make time visible</span>
           <h2>Start building a more focused week.</h2>
-          <p>Create a personal workspace and explore the complete TimeFlow prototype.</p>
+          <p>Create an account to start using your Supabase-connected workspace.</p>
           <Button onClick={() => navigate("/register")}>
             Start tracking for free <ChevronRight size={16} />
           </Button>
@@ -449,7 +441,7 @@ function PublicLanding({ navigate }: { navigate: (path: string) => void }) {
           <button onClick={() => navigate("/login")}>Log in</button>
           <button onClick={() => navigate("/register")}>Create account</button>
         </div>
-        <small>© {new Date().getFullYear()} TimeFlow. Frontend prototype.</small>
+        <small>© {new Date().getFullYear()} TimeFlow.</small>
       </footer>
     </div>
   );
@@ -462,12 +454,17 @@ function AuthScreen({
   initialMode: AuthMode;
   navigate: (path: string) => void;
 }) {
-  const { data, login, register, sessionExpired } = useAppStore();
+  const { data, login, register, dataError } = useAppStore();
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [error, setError] = useState("");
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [pending, setPending] = useState<{ name: string; email: string; password?: string; verificationCode?: string } | null>(null);
+  const [pending, setPending] = useState<{
+    name: string;
+    email: string;
+    password?: string;
+    verificationCode?: string;
+  } | null>(null);
   const [otpCode, setOtpCode] = useState("");
   const [resending, setResending] = useState(false);
   const changeMode = (next: AuthMode) => {
@@ -483,11 +480,27 @@ function AuthScreen({
     setError("");
     const form = new FormData(event.currentTarget);
     const email = String(form.get("email") || "");
+    const client = supabase;
+    if (!client) {
+      setLoading(false);
+      setError("Supabase is not configured. Add the project URL and anon key to .env.local.");
+      return;
+    }
     if (mode === "forgot") {
-      window.setTimeout(() => {
-        setSent(true);
-        setLoading(false);
-      }, 450);
+      void client.auth
+        .resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/reset`,
+        })
+        .then(({ error: resetError }) => {
+          if (resetError) setError(resetError.message);
+          else setSent(true);
+        })
+        .catch((err: unknown) => {
+          setError(err instanceof Error ? err.message : "Could not request a password reset.");
+        })
+        .finally(() => {
+          setLoading(false);
+        });
       return;
     }
     if (mode === "reset") {
@@ -498,102 +511,112 @@ function AuthScreen({
         setLoading(false);
         return;
       }
-      window.setTimeout(() => {
-        setSent(true);
-        setLoading(false);
-      }, 450);
+      void client.auth
+        .updateUser({ password })
+        .then(({ error: updateError }) => {
+          if (updateError) setError(updateError.message);
+          else setSent(true);
+        })
+        .catch((err: unknown) => {
+          setError(err instanceof Error ? err.message : "Could not update your password.");
+        })
+        .finally(() => {
+          setLoading(false);
+        });
       return;
     }
     if (mode === "register") {
       const name = String(form.get("name") || "");
       const password = String(form.get("password") || "");
-      if (data.users.some((user) => user.email.toLowerCase() === email.toLowerCase())) {
-        setLoading(false);
-        return setError("An account with this email already exists.");
-      }
-
       if (isSupabaseConfigured) {
-        supabase.auth.signUp({
-          email,
-          password: password || "TimeFlow123!",
-          options: {
-            data: { full_name: name }
-          }
-        }).then(({ error: signUpError }) => {
-          setLoading(false);
-          if (signUpError) {
-            setError(signUpError.message);
-            return;
-          }
-          setPending({ name, email, password });
-          setMode("verify");
-          navigate("/verify");
-        }).catch((err) => {
-          setLoading(false);
-          setError(err.message || "Failed to sign up.");
-        });
+        client.auth
+          .signUp({
+            email,
+            password,
+            options: {
+              data: { full_name: name },
+            },
+          })
+    .then(({ data, error: signUpError }) => {
+  setLoading(false);
+  if (signUpError) {
+    setError(signUpError.message);
+    return;
+  }
+  if (data.session) {
+    // naka-off ang Confirm email: naka-login na agad.
+    // Ang auth listener na ang maglilipat sa dashboard.
+    return;
+  }
+  setPending({ name, email, password });
+  setMode("verify");
+  navigate("/verify");
+})
+ .catch((err) => {
+            setLoading(false);
+            setError(err instanceof Error ? err.message : "Failed to sign up.");
+          });
         return;
       }
-
-      register(name, email);
-      navigate("/dashboard");
-      setLoading(false);
-      return;
     }
     if (mode === "login") {
       const password = String(form.get("password") || "");
 
       if (isSupabaseConfigured) {
-        supabase.auth.signInWithPassword({
-          email,
-          password: password || "TimeFlow123!"
-        }).then(async ({ data: authData, error: authError }) => {
-          if (authError) {
-            // Check local fallback
-            if (login(email)) {
+        client.auth
+          .signInWithPassword({
+            email,
+            password,
+          })
+          .then(async ({ data: authData, error: authError }) => {
+            if (authError) {
               setLoading(false);
-              navigate("/dashboard");
+              setError(authError.message || "Invalid email or password.");
               return;
             }
-            setLoading(false);
-            setError(authError.message || "Invalid email or password.");
-            return;
-          }
 
-          // Successfully authenticated with Supabase
-          if (authData.user) {
-            const userName = authData.user.user_metadata?.full_name || email.split("@")[0];
-            const existingUser = data.users.find(u => u.email.toLowerCase() === email.toLowerCase());
-            if (existingUser) {
-              login(email);
-            } else {
-              register(userName, email, authData.user.id);
+            if (authData.user) {
+              const userName = authData.user.user_metadata?.full_name || email.split("@")[0];
+              const existingUser = data.users.find((user) => user.id === authData.user.id);
+              if (existingUser) {
+                login(email);
+              } else {
+                const { data: profile, error: profileError } = await client
+                  .from("profiles")
+                  .select("*")
+                  .eq("id", authData.user.id)
+                  .maybeSingle();
+                if (profileError) throw profileError;
+                if (profile) {
+                  login(email, {
+                    id: profile.id,
+                    workspaceIds: profile.workspace_ids || [],
+                    name: profile.name || userName,
+                    email: profile.email || email,
+                    role: profile.role === "admin" ? "admin" : "member",
+                    status: profile.status || "active",
+                    joinedAt: profile.joined_at || new Date().toISOString(),
+                    avatar: profile.avatar || userName.slice(0, 2).toUpperCase(),
+                    timezone: profile.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+                    timeFormat: profile.time_format === "24h" ? "24h" : "12h",
+                  });
+                } else {
+                  await register(userName, email, authData.user.id);
+                }
+              }
+              navigate("/dashboard");
             }
-            navigate("/dashboard");
-          }
-          setLoading(false);
-        }).catch((err) => {
-          if (!login(email)) {
-            setError(err.message || "Could not sign in.");
-          } else {
-            navigate("/dashboard");
-          }
-          setLoading(false);
-        });
+            setLoading(false);
+          })
+          .catch((err) => {
+            setError(err instanceof Error ? err.message : "Could not sign in.");
+            setLoading(false);
+          });
         return;
       }
-
-      window.setTimeout(() => {
-        if (!login(email)) setError("Use one of the demo accounts below, or create an account.");
-        setLoading(false);
-      }, 450);
-      return;
     }
-
-    window.setTimeout(() => {
-      if (!login(email)) setError("Use one of the demo accounts below, or create an account.");
-      setLoading(false);
-    }, 450);
+    setLoading(false);
+    setError("Supabase is not configured. Add the project URL and anon key to .env.local.");
   };
   return (
     <main className="auth-shell">
@@ -605,20 +628,6 @@ function AuthScreen({
           <span className="eyebrow">TimeFlow</span>
           <h1>Make every hour count.</h1>
           <p>One calm place for focused work, team visibility, and better decisions.</p>
-        </div>
-        <div className="auth-proof">
-          <div>
-            <strong>12.4k</strong>
-            <span>hours tracked</span>
-          </div>
-          <div>
-            <strong>94%</strong>
-            <span>team adoption</span>
-          </div>
-          <div>
-            <strong>8.6h</strong>
-            <span>saved weekly</span>
-          </div>
         </div>
       </section>
       <section className="auth-panel">
@@ -656,41 +665,62 @@ function AuthScreen({
           </h2>
           <p className="muted">
             {mode === "verify"
-              ? `We sent a simulated verification link to ${pending?.email || "your email"}.`
+              ? `We sent a verification code to ${pending?.email || "your email"}.`
               : mode === "forgot"
-                ? "We’ll simulate sending a secure recovery link."
+                ? "We’ll send a secure password reset link to your email."
                 : mode === "reset"
                   ? "Use at least six characters for your new password."
                   : "Continue to your team workspace."}
           </p>
-          {sessionExpired && mode === "login" && (
-            <div className="warning-panel auth-notice">
-              <Clock3 size={18} />
-              <div>
-                <strong>Your session expired</strong>
-                <p>Sign in again to continue where you left off.</p>
-              </div>
-            </div>
+          {dataError && (
+            <p className="form-error" role="alert">
+              {dataError}
+            </p>
           )}
           {mode === "verify" ? (
             <div className="verification-panel">
-              <span style={{ display: "inline-flex", padding: "10px", borderRadius: "50%", background: "#eff6ff", color: "#2563eb", marginBottom: "8px" }}>
+              <span
+                style={{
+                  display: "inline-flex",
+                  padding: "10px",
+                  borderRadius: "50%",
+                  background: "#eff6ff",
+                  color: "#2563eb",
+                  marginBottom: "8px",
+                }}
+              >
                 <Clock3 size={28} />
               </span>
               <p style={{ margin: "4px 0" }}>
                 A confirmation code has been dispatched to <strong>{pending?.email}</strong>.
               </p>
               <p style={{ fontSize: "13px", color: "#64748b", margin: "4px 0 12px 0" }}>
-                Check your inbox (and spam folder) for the confirmation link or enter the 6-digit code.
+                Check your inbox (and spam folder) for the confirmation link or enter the 6-digit
+                code.
               </p>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", width: "100%", margin: "8px 0" }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                  width: "100%",
+                  margin: "8px 0",
+                }}
+              >
                 <input
                   type="text"
                   maxLength={6}
                   value={otpCode}
                   onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
                   placeholder="Enter 6-digit code"
-                  style={{ textAlign: "center", fontSize: "18px", letterSpacing: "4px", padding: "10px", borderRadius: "6px", border: "1px solid #cbd5e1" }}
+                  style={{
+                    textAlign: "center",
+                    fontSize: "18px",
+                    letterSpacing: "4px",
+                    padding: "10px",
+                    borderRadius: "6px",
+                    border: "1px solid #cbd5e1",
+                  }}
                 />
                 {error && <span style={{ color: "#ef4444", fontSize: "13px" }}>{error}</span>}
               </div>
@@ -707,21 +737,19 @@ function AuthScreen({
                   setLoading(true);
                   setError("");
 
-                  if (isSupabaseConfigured) {
+                  if (isSupabaseConfigured && supabase) {
                     try {
-                      // Attempt signup verification first
-                      let { error: verifyError } = await supabase.auth.verifyOtp({
+                      let { data: verifyData, error: verifyError } = await supabase.auth.verifyOtp({
                         email: pending.email,
                         token: cleanCode,
-                        type: "signup"
+                        type: "signup",
                       });
 
-                      // If signup type failed, try email verification type as fallback
                       if (verifyError) {
                         const fallback = await supabase.auth.verifyOtp({
                           email: pending.email,
                           token: cleanCode,
-                          type: "email"
+                          type: "email",
                         });
                         verifyError = fallback.error;
                       }
@@ -732,24 +760,43 @@ function AuthScreen({
                         return;
                       }
 
-                      // Successful verification
-                      register(pending.name, pending.email);
+                      const user = verifyData.user || (await supabase.auth.getUser()).data.user;
+                      if (!user) {
+                        setLoading(false);
+                        setError(
+                          "Email verified, but no Supabase user session was returned. Sign in to continue.",
+                        );
+                        return;
+                      }
+                      await register(pending.name, pending.email, user.id);
                       navigate("/dashboard");
                       setLoading(false);
-                    } catch (err: any) {
+                    } catch (err: unknown) {
                       setLoading(false);
-                      setError(err.message || "Verification failed. Please try again.");
+                      setError(
+                        err instanceof Error
+                          ? err.message
+                          : "Verification failed. Please try again.",
+                      );
                     }
                   } else {
-                    register(pending.name, pending.email);
-                    navigate("/dashboard");
                     setLoading(false);
+                    setError(
+                      "Supabase is not configured. Add the project URL and anon key to .env.local.",
+                    );
                   }
                 }}
               >
                 {loading ? "Verifying..." : "Verify & complete registration"}
               </Button>
-              <div style={{ display: "flex", justifyContent: "space-between", width: "100%", marginTop: "8px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  width: "100%",
+                  marginTop: "8px",
+                }}
+              >
                 <button
                   className="text-button"
                   disabled={resending}
@@ -757,9 +804,10 @@ function AuthScreen({
                     if (!pending?.email) return;
                     setResending(true);
                     try {
+                      if (!supabase) throw new Error("Supabase is not configured.");
                       await supabase.auth.resend({
                         type: "signup",
-                        email: pending.email
+                        email: pending.email,
                       });
                       setError("New confirmation email sent!");
                     } catch {
@@ -771,7 +819,13 @@ function AuthScreen({
                 >
                   {resending ? "Sending..." : "Resend email"}
                 </button>
-                <button className="text-button" onClick={() => { setError(""); changeMode("register"); }}>
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setError("");
+                    changeMode("register");
+                  }}
+                >
                   Use a different email
                 </button>
               </div>
@@ -784,7 +838,7 @@ function AuthScreen({
                 <p>
                   {mode === "reset"
                     ? "You can now sign in with your new password."
-                    : "Open the simulated link to choose a new password."}
+                    : "Use the reset link sent to your email to choose a new password."}
                 </p>
               </div>
               <Button
@@ -811,13 +865,7 @@ function AuthScreen({
               {(mode === "login" || mode === "register" || mode === "reset") && (
                 <label className="field">
                   <span>{mode === "reset" ? "New password" : "Password"}</span>
-                  <input
-                    name="password"
-                    type="password"
-                    required
-                    minLength={6}
-                    defaultValue="demo123"
-                  />
+                  <input name="password" type="password" required minLength={6} />
                 </label>
               )}
               {mode === "reset" && (
@@ -850,24 +898,6 @@ function AuthScreen({
               >
                 Forgot password?
               </button>
-              <div className="divider">
-                <span>or try a demo account</span>
-              </div>
-              <div className="demo-grid">
-                {data.users
-                  .filter((user) => user.status === "active")
-                  .slice(0, 2)
-                  .map((user) => (
-                    <button key={user.id} className="demo-user" onClick={() => login(user.email)}>
-                      <span className="avatar">{user.avatar}</span>
-                      <span>
-                        <strong>{user.name}</strong>
-                        <small>{user.role} view</small>
-                      </span>
-                      <ChevronRight size={17} />
-                    </button>
-                  ))}
-              </div>
             </>
           )}
           <p className="auth-switch">
@@ -901,7 +931,7 @@ const navItems: Array<{ page: Page; label: string; icon: typeof Activity; admin?
 ];
 
 function AppShell() {
-  const { data, currentUser, logout, switchWorkspace } = useAppStore();
+  const { data, currentUser, logout, switchWorkspace, dataError } = useAppStore();
   const [page, setPage] = useState<Page>("dashboard");
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -983,11 +1013,11 @@ function AppShell() {
         <div className="sidebar-help">
           {!collapsed && (
             <>
-              <span className="eyebrow">Prototype</span>
-              <p>All changes are saved in this browser.</p>
+              <span className="eyebrow">Supabase</span>
+              <p>Workspace data is synced to your database.</p>
             </>
           )}
-          <button className="icon-button" title="Prototype data is stored locally">
+          <button className="icon-button" title="Workspace data is synced to Supabase">
             <Activity size={17} />
           </button>
         </div>
@@ -1024,18 +1054,7 @@ function AppShell() {
               {noticesOpen && (
                 <div className="popover notifications">
                   <strong>Notifications</strong>
-                  <p>
-                    <span className="notice-icon">
-                      <UserPlus size={15} />
-                    </span>{" "}
-                    Noah’s invitation is still pending.
-                  </p>
-                  <p>
-                    <span className="notice-icon">
-                      <Check size={15} />
-                    </span>{" "}
-                    Your weekly report is ready.
-                  </p>
+                  <p>No new notifications.</p>
                 </div>
               )}
             </div>
@@ -1067,6 +1086,11 @@ function AppShell() {
           </div>
         </header>
         <main className="content">
+          {dataError && (
+            <p className="form-error" role="alert">
+              {dataError}
+            </p>
+          )}
           {page === "dashboard" && <DashboardPage onNavigate={setPage} />}
           {page === "tracker" && <TrackerPage />}
           {page === "calendar" && <CalendarPage />}
@@ -2828,57 +2852,19 @@ function TeamPage() {
       </section>
       {invite && (
         <Modal
-          title="Invite a team member"
-          subtitle="This creates a simulated pending invitation."
+          title="Invitations need server setup"
+          subtitle="A secure Supabase invitation function is not configured."
           onClose={() => setInvite(false)}
         >
-          <form
-            className="modal-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const form = new FormData(event.currentTarget);
-              const name = String(form.get("name"));
-              const user: User = {
-                id: id("user"),
-                workspaceIds: [data.activeWorkspaceId],
-                name,
-                email: String(form.get("email")),
-                role: String(form.get("role")) as User["role"],
-                status: "invited",
-                joinedAt: new Date().toISOString(),
-                avatar: name
-                  .split(" ")
-                  .map((part) => part[0])
-                  .join("")
-                  .slice(0, 2)
-                  .toUpperCase(),
-                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                timeFormat: "12h",
-              };
-              saveUser(user);
-              addAudit("Invited member", name, `Invited as ${user.role}`);
-              setInvite(false);
-            }}
-          >
-            <label className="field field-full">
-              <span>Full name</span>
-              <input name="name" required />
-            </label>
-            <label className="field field-full">
-              <span>Email</span>
-              <input name="email" type="email" required />
-            </label>
-            <SelectField label="Role" name="role">
-              <option value="member">Member</option>
-              <option value="admin">Admin</option>
-            </SelectField>
-            <footer className="modal-actions">
-              <Button type="button" variant="ghost" onClick={() => setInvite(false)}>
-                Cancel
-              </Button>
-              <Button type="submit">Send invitation</Button>
-            </footer>
-          </form>
+          <p>
+            Nothing was added. Configure an Edge Function to send invitations without exposing a
+            service key.
+          </p>
+          <footer className="modal-actions">
+            <Button type="button" onClick={() => setInvite(false)}>
+              Close
+            </Button>
+          </footer>
         </Modal>
       )}
       {detail && (
@@ -2986,7 +2972,7 @@ function AuditPage() {
 }
 
 function SettingsPage() {
-  const { data, currentUser, updateProfile, resetDemo } = useAppStore();
+  const { data, currentUser, updateProfile } = useAppStore();
   const [saved, setSaved] = useState(false);
   if (!currentUser) return null;
   return (
@@ -2999,13 +2985,6 @@ function SettingsPage() {
           }
         >
           Workspace
-        </button>
-        <button
-          onClick={() =>
-            document.getElementById("prototype-settings")?.scrollIntoView({ behavior: "smooth" })
-          }
-        >
-          Prototype data
         </button>
       </nav>
       <div className="settings-content">
@@ -3070,7 +3049,7 @@ function SettingsPage() {
           <div className="card-header">
             <div>
               <h3>Workspace</h3>
-              <p>These settings apply to the current browser prototype.</p>
+              <p>These preferences are saved to your profile.</p>
             </div>
           </div>
           <div className="settings-form">
@@ -3089,18 +3068,6 @@ function SettingsPage() {
               <input value={currentUser.role} readOnly />
             </label>
           </div>
-        </section>
-        <section className="card settings-card danger-zone" id="prototype-settings">
-          <div>
-            <h3>Reset prototype data</h3>
-            <p>Restore all sample projects, entries, tags, and team activity.</p>
-          </div>
-          <Button
-            variant="danger"
-            onClick={() => window.confirm("Reset all prototype data?") && resetDemo()}
-          >
-            <RotateCcw size={16} /> Reset data
-          </Button>
         </section>
       </div>
     </div>
@@ -3169,9 +3136,15 @@ function Root() {
   return <AuthScreen key={mode} initialMode={mode} navigate={navigate} />;
 }
 
-export default function App() {
+export default function App({
+  initialData,
+  initialSessionId,
+}: {
+  initialData?: AppData;
+  initialSessionId?: string;
+} = {}) {
   return (
-    <AppStoreProvider>
+    <AppStoreProvider initialData={initialData} initialSessionId={initialSessionId}>
       <Root />
     </AppStoreProvider>
   );

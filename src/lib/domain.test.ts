@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createMockData } from "../data/mock";
+import { createTestData } from "../test/fixtures";
 import type { ActiveTimer, TimeEntry } from "../types";
 import {
   calculateTotals,
@@ -53,7 +53,7 @@ describe("timer domain", () => {
 });
 
 describe("entry and reporting rules", () => {
-  const data = createMockData();
+  const data = createTestData();
 
   it("detects overlaps but not adjacent entries", () => {
     const existing = { start: "2025-01-01T09:00:00Z", end: "2025-01-01T10:00:00Z" };

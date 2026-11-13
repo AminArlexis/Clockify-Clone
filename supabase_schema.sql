@@ -256,7 +256,9 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.register_workspace_account(
+DROP FUNCTION IF EXISTS public.register_workspace_account(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT);
+
+CREATE FUNCTION public.register_workspace_account(
     p_workspace_id TEXT,
     p_workspace_name TEXT,
     p_full_name TEXT,
@@ -383,7 +385,9 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.invite_workspace_member(
+DROP FUNCTION IF EXISTS public.invite_workspace_member(TEXT, TEXT, TEXT);
+
+CREATE FUNCTION public.invite_workspace_member(
     p_workspace_id TEXT,
     p_email TEXT,
     p_role TEXT
@@ -426,7 +430,9 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.update_workspace_member(
+DROP FUNCTION IF EXISTS public.update_workspace_member(TEXT, UUID, TEXT, TEXT);
+
+CREATE FUNCTION public.update_workspace_member(
     p_workspace_id TEXT,
     p_user_id UUID,
     p_role TEXT,
@@ -489,7 +495,9 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.update_my_profile(
+DROP FUNCTION IF EXISTS public.update_my_profile(TEXT, TEXT, TEXT, TEXT);
+
+CREATE FUNCTION public.update_my_profile(
     p_full_name TEXT,
     p_avatar TEXT,
     p_timezone TEXT,

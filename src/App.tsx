@@ -482,6 +482,7 @@ function AuthScreen({
     verificationCode?: string;
   } | null>(null);
   const [otpCode, setOtpCode] = useState("");
+  const [verifiedUserId, setVerifiedUserId] = useState("");
   const [resending, setResending] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   useEffect(() => {
@@ -579,6 +580,7 @@ function AuthScreen({
               changeMode("login");
               return;
             }
+            setVerifiedUserId("");
             setLoading(false);
             setPending({ name, email, password });
             setResendCooldown(60);
@@ -731,6 +733,7 @@ function AuthScreen({
                   value={otpCode}
                   onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
                   placeholder="Enter 6-digit code"
+                  disabled={Boolean(verifiedUserId)}
                   style={{
                     textAlign: "center",
                     fontSize: "18px",
@@ -741,6 +744,11 @@ function AuthScreen({
                   }}
                 />
                 {error && <span style={{ color: "#ef4444", fontSize: "13px" }}>{error}</span>}
+                {verifiedUserId && (
+                  <span role="status" style={{ color: "#118564", fontSize: "13px" }}>
+                    Email verified. You can retry workspace setup without entering the code again.
+                  </span>
+                )}
                 {notice && <span style={{ color: "#118564", fontSize: "13px" }}>{notice}</span>}
               </div>
               <Button
@@ -748,7 +756,7 @@ function AuthScreen({
                 onClick={async () => {
                   if (!pending) return;
                   const cleanCode = otpCode.trim();
-                  if (!cleanCode || cleanCode.length < 6) {
+                  if (!verifiedUserId && (!cleanCode || cleanCode.length < 6)) {
                     setError("Please enter the complete 6-digit confirmation code.");
                     return;
                   }
@@ -758,46 +766,71 @@ function AuthScreen({
                   setNotice("");
 
                   if (isSupabaseConfigured && supabase) {
+                    let emailConfirmed = Boolean(verifiedUserId);
                     try {
-                      let { data: verifyData, error: verifyError } = await supabase.auth.verifyOtp({
-                        email: pending.email,
-                        token: cleanCode,
-                        type: "signup",
-                      });
+                      let userId = verifiedUserId;
+                      if (userId) {
+                        const { data: sessionData, error: sessionError } =
+                          await supabase.auth.getUser();
+                        if (sessionError) throw sessionError;
+                        if (!sessionData.user || sessionData.user.id !== userId) {
+                          throw new Error(
+                            "Your verified session expired. Sign in with this email and password to finish setup.",
+                          );
+                        }
+                      } else {
+                        let { data: verifyData, error: verifyError } =
+                          await supabase.auth.verifyOtp({
+                            email: pending.email,
+                            token: cleanCode,
+                            type: "signup",
+                          });
 
-                      if (verifyError) {
-                        const fallback = await supabase.auth.verifyOtp({
-                          email: pending.email,
-                          token: cleanCode,
-                          type: "email",
-                        });
-                        verifyData = fallback.data;
-                        verifyError = fallback.error;
+                        if (verifyError) {
+                          const fallback = await supabase.auth.verifyOtp({
+                            email: pending.email,
+                            token: cleanCode,
+                            type: "email",
+                          });
+                          verifyData = fallback.data;
+                          verifyError = fallback.error;
+                        }
+
+                        if (verifyError) {
+                          setLoading(false);
+                          setError(
+                            verifyError.message || "Invalid or expired verification code.",
+                          );
+                          return;
+                        }
+
+                        const user =
+                          verifyData.user || (await supabase.auth.getUser()).data.user;
+                        if (!user) {
+                          setLoading(false);
+                          setError(
+                            "Email verified, but no Supabase user session was returned. Sign in to continue.",
+                          );
+                          return;
+                        }
+                        userId = user.id;
+                        emailConfirmed = true;
+                        setVerifiedUserId(userId);
                       }
 
-                      if (verifyError) {
-                        setLoading(false);
-                        setError(verifyError.message || "Invalid or expired verification code.");
-                        return;
-                      }
-
-                      const user = verifyData.user || (await supabase.auth.getUser()).data.user;
-                      if (!user) {
-                        setLoading(false);
-                        setError(
-                          "Email verified, but no Supabase user session was returned. Sign in to continue.",
-                        );
-                        return;
-                      }
-                      await register(pending.name, pending.email, user.id);
+                      await register(pending.name, pending.email, userId);
+                      setVerifiedUserId("");
+                      setPending(null);
                       navigate("/dashboard");
                       setLoading(false);
                     } catch (err: unknown) {
                       setLoading(false);
+                      const details =
+                        err instanceof Error ? err.message : "Please try again.";
                       setError(
-                        err instanceof Error
-                          ? err.message
-                          : "Verification failed. Please try again.",
+                        emailConfirmed
+                          ? `Email verified, but workspace setup failed. Retry without re-entering the code. Details: ${details}`
+                          : details,
                       );
                     }
                   } else {
@@ -808,7 +841,13 @@ function AuthScreen({
                   }
                 }}
               >
-                {loading ? "Verifying..." : "Verify & complete registration"}
+                {loading
+                  ? verifiedUserId
+                    ? "Completing setup..."
+                    : "Verifying..."
+                  : verifiedUserId
+                    ? "Retry account setup"
+                    : "Verify & complete registration"}
               </Button>
               <div
                 style={{
@@ -820,7 +859,7 @@ function AuthScreen({
               >
                 <button
                   className="text-button"
-                  disabled={resending || resendCooldown > 0}
+                  disabled={Boolean(verifiedUserId) || resending || resendCooldown > 0}
                   onClick={async () => {
                     if (!pending?.email || resendCooldown > 0) return;
                     setResending(true);
@@ -852,11 +891,13 @@ function AuthScreen({
                     }
                   }}
                 >
-                  {resending
-                    ? "Sending..."
-                    : resendCooldown > 0
-                      ? `Resend code (${resendCooldown}s)`
-                      : "Resend email"}
+                  {verifiedUserId
+                    ? "Email verified"
+                    : resending
+                      ? "Sending..."
+                      : resendCooldown > 0
+                        ? `Resend code (${resendCooldown}s)`
+                        : "Resend email"}
                 </button>
                 <button
                   className="text-button"

@@ -40,6 +40,7 @@ pnpm test:run
 ## Authentication and data
 
 - `/register` creates a Supabase Auth account. After email verification, the registration RPC claims matching pending workspace invitations or creates a new workspace with the creator as its admin.
+- If email verification succeeds but workspace provisioning fails, the verification screen can retry provisioning without reusing the consumed code. After a refresh, signing in also repairs a missing app profile/workspace.
 - `/login`, `/forgot`, and `/reset` use Supabase Auth.
 - `workspace_members` is the authoritative source for workspace access and per-workspace admin/member roles. `profiles.workspace_ids` is retained only for compatibility.
 - Workspaces, profiles, projects, tasks, tags, time entries, active timers, and audit events are read from their Supabase tables.

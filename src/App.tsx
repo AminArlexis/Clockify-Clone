@@ -457,6 +457,11 @@ function AuthScreen({
   const { data, login, register, dataError } = useAppStore();
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState(() => {
+    const saved = sessionStorage.getItem("authNotice") || "";
+    sessionStorage.removeItem("authNotice");
+    return saved;
+  });
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState<{
@@ -478,6 +483,7 @@ function AuthScreen({
     if (loading) return;
     setLoading(true);
     setError("");
+    setNotice("");
     const form = new FormData(event.currentTarget);
     const email = String(form.get("email") || "");
     const client = supabase;
@@ -537,22 +543,26 @@ function AuthScreen({
               data: { full_name: name },
             },
           })
-    .then(({ data, error: signUpError }) => {
-  setLoading(false);
-  if (signUpError) {
-    setError(signUpError.message);
-    return;
-  }
-  if (data.session) {
-    // naka-off ang Confirm email: naka-login na agad.
-    // Ang auth listener na ang maglilipat sa dashboard.
-    return;
-  }
-  setPending({ name, email, password });
-  setMode("verify");
-  navigate("/verify");
-})
- .catch((err) => {
+          .then(async ({ data: signUpData, error: signUpError }) => {
+            if (signUpError) {
+              setLoading(false);
+              setError(signUpError.message);
+              return;
+            }
+            if (signUpData.session) {
+              // Naka-off ang Confirm email: gumawa ng account, tapos diretso sa login.
+              await client.auth.signOut();
+              setLoading(false);
+              sessionStorage.setItem("authNotice", "Account created! Please sign in.");
+              changeMode("login");
+              return;
+            }
+            setLoading(false);
+            setPending({ name, email, password });
+            setMode("verify");
+            navigate("/verify");
+          })
+          .catch((err) => {
             setLoading(false);
             setError(err instanceof Error ? err.message : "Failed to sign up.");
           });
@@ -873,6 +883,11 @@ function AuthScreen({
                   <span>Confirm password</span>
                   <input name="confirmation" type="password" required minLength={6} />
                 </label>
+              )}
+              {notice && (
+                <p style={{ color: "#16a34a", fontSize: "14px", margin: 0 }} role="status">
+                  {notice}
+                </p>
               )}
               {error && <p className="form-error">{error}</p>}
               <Button type="submit" disabled={loading} aria-busy={loading}>

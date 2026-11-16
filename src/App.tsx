@@ -56,7 +56,7 @@ import {
   claimWorkspaceInvitesInSupabase,
   fetchAppDataFromSupabase,
 } from "./lib/supabaseSync";
-import type { AppData, EntryInput, Page, Project, Tag, Task, TimeEntry, User } from "./types";
+import type { AppData, EntryInput, Page, Project, Segment, Tag, Task, TimeEntry, User } from "./types";
 
 const id = (prefix: string) => `${prefix}-${Date.now()}`;
 const dateKey = (date: Date | string) => {
@@ -1022,6 +1022,40 @@ function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [noticesOpen, setNoticesOpen] = useState(false);
+  const noticeStorageKey = currentUser ? `timeflow-notices-seen-${currentUser.id}` : "";
+  const [lastSeenNoticeAt, setLastSeenNoticeAt] = useState(() =>
+    noticeStorageKey ? localStorage.getItem(noticeStorageKey) || "" : "",
+  );
+  useEffect(() => {
+    setLastSeenNoticeAt(noticeStorageKey ? localStorage.getItem(noticeStorageKey) || "" : "");
+  }, [noticeStorageKey]);
+
+  const notifications = useMemo(() => {
+    const relevant = data.audit.filter((event) => {
+      if (currentUser?.role === "admin") return true;
+      return (
+        event.actorId === currentUser?.id ||
+        event.action.toLowerCase().includes("admin") ||
+        event.action.toLowerCase().includes("member")
+      );
+    });
+    return relevant.slice(0, 8);
+  }, [data.audit, currentUser?.id, currentUser?.role]);
+
+  const unreadNotices = useMemo(
+    () =>
+      notifications.filter(
+        (event) => !lastSeenNoticeAt || new Date(event.createdAt) > new Date(lastSeenNoticeAt),
+      ),
+    [notifications, lastSeenNoticeAt],
+  );
+
+  const markAllNoticesRead = () => {
+    const latest = notifications[0]?.createdAt || new Date().toISOString();
+    setLastSeenNoticeAt(latest);
+    if (noticeStorageKey) localStorage.setItem(noticeStorageKey, latest);
+  };
+
   const activeWorkspace = data.workspaces.find(
     (workspace) => workspace.id === data.activeWorkspaceId,
   );
@@ -1095,17 +1129,6 @@ function AppShell() {
               </button>
             ))}
         </nav>
-        <div className="sidebar-help">
-          {!collapsed && (
-            <>
-              <span className="eyebrow">Supabase</span>
-              <p>Workspace data is synced to your database.</p>
-            </>
-          )}
-          <button className="icon-button" title="Workspace data is synced to Supabase">
-            <Activity size={17} />
-          </button>
-        </div>
       </aside>
       <section className={cn("main-shell", collapsed && "main-shell-expanded")}>
         <header className="topbar">
@@ -1130,16 +1153,81 @@ function AppShell() {
             <div className="popover-wrap">
               <button
                 className="icon-button"
-                onClick={() => setNoticesOpen(!noticesOpen)}
+                onClick={() => {
+                  setNoticesOpen(!noticesOpen);
+                  setProfileOpen(false);
+                }}
                 aria-label="Notifications"
               >
                 <Bell size={19} />
-                <i className="notification-dot" />
+                {unreadNotices.length > 0 && <i className="notification-dot" />}
               </button>
               {noticesOpen && (
-                <div className="popover notifications">
-                  <strong>Notifications</strong>
-                  <p>No new notifications.</p>
+                <div className="popover notifications" style={{ width: "320px", maxHeight: "380px", overflowY: "auto" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: "8px",
+                    }}
+                  >
+                    <strong>
+                      Notifications{unreadNotices.length > 0 ? ` (${unreadNotices.length})` : ""}
+                    </strong>
+                    {unreadNotices.length > 0 && (
+                      <button
+                        className="text-button"
+                        style={{ fontSize: "12px" }}
+                        onClick={markAllNoticesRead}
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+                  {notifications.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {notifications.map((event) => {
+                        const actor = data.users.find((u) => u.id === event.actorId);
+                        const isUnread =
+                          !lastSeenNoticeAt ||
+                          new Date(event.createdAt) > new Date(lastSeenNoticeAt);
+                        return (
+                          <button
+                            key={event.id}
+                            onClick={() => {
+                              markAllNoticesRead();
+                              setNoticesOpen(false);
+                              navigate(currentUser?.role === "admin" ? "audit" : "tracker");
+                            }}
+                            style={{
+                              textAlign: "left",
+                              padding: "8px 10px",
+                              borderRadius: "6px",
+                              border: "1px solid #e2e8f0",
+                              background: isUnread ? "#eff6ff" : "#ffffff",
+                              cursor: "pointer",
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: "2px",
+                            }}
+                          >
+                            <span style={{ fontSize: "13px", fontWeight: 600, color: "#0f172a" }}>
+                              {event.action}
+                            </span>
+                            <span style={{ fontSize: "12px", color: "#475569" }}>
+                              {actor?.name || "Team"} · {event.target}
+                            </span>
+                            <small style={{ fontSize: "11px", color: "#94a3b8" }}>
+                              {fmtDate(event.createdAt)} · {fmtClock(event.createdAt)}
+                            </small>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p>No new notifications.</p>
+                  )}
                 </div>
               )}
             </div>
@@ -1192,26 +1280,42 @@ function AppShell() {
   );
 }
 
-function TimerClock() {
-  const { data } = useAppStore();
-  const [, tick] = useState(0);
-  useEffect(() => {
-    const timer = window.setInterval(() => tick((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-  const mins =
-    data.activeTimer?.segments
-      .filter((segment) => segment.type === "work")
-      .reduce((sum, segment) => sum + minutesBetween(segment.start, segment.end), 0) || 0;
-  const seconds = data.activeTimer
-    ? Math.max(
+function formatSegmentDuration(segments: Segment[] | undefined, type: Segment["type"], now: number) {
+  const totalSeconds = Math.floor(
+    (segments
+      ?.filter((segment) => segment.type === type)
+      .reduce(
+        (sum, segment) =>
+          sum +
+          Math.max(
+            0,
+            (segment.end ? new Date(segment.end).getTime() : now) -
+              new Date(segment.start).getTime(),
+          ),
         0,
-        Math.floor((Date.now() - new Date(data.activeTimer.startedAt).getTime()) / 1000) % 60,
-      )
-    : 0;
-  return (
-    <strong>{`${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`}</strong>
+      ) || 0) / 1000,
   );
+  const hours = Math.floor(totalSeconds / 3600);
+  const mins = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function TimerClock({ type = "work" }: { type?: Segment["type"] }) {
+  const { data } = useAppStore();
+  const [now, setNow] = useState(() => Date.now());
+  const isTicking =
+    (type === "work" && data.activeTimer?.status === "running") ||
+    (type === "break" && data.activeTimer?.status === "paused");
+
+  useEffect(() => {
+    setNow(Date.now());
+    if (!isTicking) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isTicking, data.activeTimer?.id, data.activeTimer?.segments.length]);
+
+  return <strong>{formatSegmentDuration(data.activeTimer?.segments, type, now)}</strong>;
 }
 
 function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
@@ -1494,7 +1598,21 @@ function TrackerPage() {
           </div>
           <div className="timer-display">
             <TimerClock />
-            <span>{active?.status || "ready"}</span>
+            <span
+              style={
+                active?.status === "paused"
+                  ? { color: "#d97706", fontWeight: 600 }
+                  : undefined
+              }
+            >
+              {active?.status === "paused" ? (
+                <>
+                  Paused · Break <TimerClock type="break" />
+                </>
+              ) : (
+                active?.status || "ready"
+              )}
+            </span>
           </div>
           {!active ? (
             <Button
@@ -3238,7 +3356,7 @@ function RecentEntries({ entries, title }: { entries: TimeEntry[]; title: string
 }
 
 function Root() {
-  const { currentUser } = useAppStore();
+  const { currentUser, loading } = useAppStore();
   const [path, setPath] = useState(window.location.pathname);
   useEffect(() => {
     const update = () => setPath(window.location.pathname);
@@ -3250,6 +3368,25 @@ function Root() {
     setPath(next);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
+  if (loading) {
+    return (
+      <main
+        style={{
+          minHeight: "100vh",
+          display: "grid",
+          placeItems: "center",
+          background: "#f8fafc",
+          color: "#475569",
+          fontFamily: "inherit",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "15px" }}>
+          <Clock3 size={20} />
+          <span>Restoring your workspace…</span>
+        </div>
+      </main>
+    );
+  }
   if (currentUser) return <AppShell />;
   if (path === "/") return <PublicLanding navigate={navigate} />;
   const mode: AuthMode =

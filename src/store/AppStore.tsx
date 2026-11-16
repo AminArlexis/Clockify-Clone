@@ -55,6 +55,7 @@ const emptyData: AppData = {
 interface AppStoreValue {
   data: AppData;
   currentUser?: User;
+  loading: boolean;
   dataError: string;
   timerError: string;
   timerBusy: boolean;
@@ -99,6 +100,9 @@ export function AppStoreProvider({
 }) {
   const [data, setData] = useState<AppData>(initialData || emptyData);
   const [sessionId, setSessionId] = useState(initialSessionId || "");
+  const [loading, setLoading] = useState(
+    !initialData && isSupabaseConfigured && Boolean(supabase),
+  );
   const [dataError, setDataError] = useState("");
   const [timerError, setTimerError] = useState("");
   const [timerBusy, setTimerBusy] = useState(false);
@@ -113,7 +117,10 @@ export function AppStoreProvider({
   }, []);
 
   useEffect(() => {
-    if (initialData || initialSessionId || !supabase) return;
+    if (initialData || initialSessionId || !supabase) {
+      if (initialData) setLoading(false);
+      return;
+    }
     let active = true;
     void supabase.auth
       .getSession()
@@ -121,35 +128,64 @@ export function AppStoreProvider({
         if (!active) return;
         if (error) {
           setDataError(`Could not restore Supabase session: ${error.message}`);
+          setLoading(false);
           return;
         }
-        setSessionId(sessionData.session?.user.id || "");
+        const nextSessionId = sessionData.session?.user.id || "";
+        setSessionId(nextSessionId);
+        if (!nextSessionId) setLoading(false);
       })
       .catch((error: unknown) => {
         if (active) {
           const message = error instanceof Error ? error.message : "Unknown Supabase error";
           setDataError(`Could not restore Supabase session: ${message}`);
+          setLoading(false);
         }
       });
 
+    let authSubscription: { unsubscribe: () => void } | undefined;
+    if (typeof supabase.auth.onAuthStateChange === "function") {
+      const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+        if (!active) return;
+        const nextSessionId = session?.user.id || "";
+        setSessionId(nextSessionId);
+        if (!nextSessionId) setLoading(false);
+      });
+      authSubscription = authListener?.subscription;
+    }
+
     return () => {
       active = false;
+      authSubscription?.unsubscribe();
     };
   }, [initialData, initialSessionId]);
 
   useEffect(() => {
-    if (initialData) return;
+    if (initialData) {
+      setLoading(false);
+      return;
+    }
     if (!isSupabaseConfigured || !supabase || !sessionId) {
       setData(emptyData);
       return;
     }
+    const client = supabase;
     let isMounted = true;
-    async function initSupabase() {
+    let refreshTimer: number | undefined;
+
+    async function loadFromSupabase() {
       try {
         const remoteData = await fetchAppDataFromSupabase(sessionId);
         if (!isMounted) return;
         if (remoteData) {
-          setData(remoteData);
+          setData((current) => ({
+            ...remoteData,
+            activeWorkspaceId: remoteData.workspaces.some(
+              (workspace) => workspace.id === current.activeWorkspaceId,
+            )
+              ? current.activeWorkspaceId
+              : remoteData.activeWorkspaceId,
+          }));
           setDataError("");
         } else {
           setData(emptyData);
@@ -159,12 +195,51 @@ export function AppStoreProvider({
         if (!isMounted) return;
         const message = error instanceof Error ? error.message : "Unknown Supabase error";
         setDataError(`Could not load workspace data from Supabase: ${message}`);
+      } finally {
+        if (isMounted) setLoading(false);
       }
     }
 
-    void initSupabase();
+    const scheduleRefresh = () => {
+      if (!isMounted) return;
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        void loadFromSupabase();
+      }, 250);
+    };
+
+    void loadFromSupabase();
+
+    const realtimeTables = [
+      "workspaces",
+      "profiles",
+      "workspace_members",
+      "projects",
+      "tasks",
+      "tags",
+      "time_entries",
+      "active_timers",
+      "audit_events",
+    ];
+    let channel: ReturnType<typeof client.channel> | undefined;
+    if (typeof client.channel === "function") {
+      const nextChannel = client.channel(`workspace-realtime-${sessionId}`);
+      for (const table of realtimeTables) {
+        nextChannel.on(
+          "postgres_changes",
+          { event: "*", schema: "public", table },
+          scheduleRefresh,
+        );
+      }
+      channel = nextChannel.subscribe();
+    }
+
     return () => {
       isMounted = false;
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+      if (channel && typeof client.removeChannel === "function") {
+        void client.removeChannel(channel);
+      }
     };
   }, [sessionId, initialData]);
   const auditEvent = (action: string, target: string, detail: string): AuditEvent => ({
@@ -626,6 +701,7 @@ export function AppStoreProvider({
     () => ({
       data: scopedData,
       currentUser,
+      loading,
       dataError,
       timerError,
       timerBusy,
@@ -682,7 +758,7 @@ export function AppStoreProvider({
       updateProfile,
       addAudit,
     }),
-    [scopedData, currentUser, dataError, timerError, timerBusy],
+    [scopedData, currentUser, loading, dataError, timerError, timerBusy],
   );
 
   return <AppStoreContext.Provider value={value}>{children}</AppStoreContext.Provider>;

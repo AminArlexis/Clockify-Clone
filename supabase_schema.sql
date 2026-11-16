@@ -23,6 +23,23 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     time_format TEXT NOT NULL DEFAULT '12h'
 );
 
+    CREATE OR REPLACE FUNCTION public.normalize_profile_email()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path = ''
+    AS $$
+    BEGIN
+        NEW.email := LOWER(BTRIM(COALESCE(NEW.email, '')));
+        RETURN NEW;
+    END;
+    $$;
+
+    DROP TRIGGER IF EXISTS profiles_normalize_email_trigger ON public.profiles;
+    CREATE TRIGGER profiles_normalize_email_trigger
+        BEFORE INSERT OR UPDATE OF email ON public.profiles
+        FOR EACH ROW
+        EXECUTE FUNCTION public.normalize_profile_email();
+
 CREATE TABLE IF NOT EXISTS public.projects (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
@@ -134,6 +151,90 @@ JOIN public.workspaces AS workspace ON workspace.id = membership.workspace_id
 WHERE profile.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   AND profile.status <> 'invited'
 ON CONFLICT (workspace_id, user_id) DO NOTHING;
+
+-- Normalize profile emails, merge any existing duplicate email rows (including workspace_ids & memberships),
+-- and enforce one profile row per normalized email.
+DO $$
+DECLARE
+    v_dup RECORD;
+BEGIN
+    UPDATE public.profiles
+    SET email = LOWER(BTRIM(email))
+    WHERE email <> LOWER(BTRIM(email));
+
+    FOR v_dup IN
+        SELECT
+            dup.id AS dup_id,
+            keep.id AS keep_id
+        FROM (
+            SELECT
+                p.id,
+                LOWER(BTRIM(p.email)) AS norm_email,
+                ROW_NUMBER() OVER (
+                    PARTITION BY LOWER(BTRIM(p.email))
+                    ORDER BY
+                        CASE WHEN EXISTS (SELECT 1 FROM auth.users u WHERE u.id::TEXT = p.id) THEN 0 ELSE 1 END,
+                        p.joined_at DESC NULLS LAST,
+                        p.id
+                ) AS rn
+            FROM public.profiles p
+        ) dup
+        JOIN (
+            SELECT
+                p.id,
+                LOWER(BTRIM(p.email)) AS norm_email,
+                ROW_NUMBER() OVER (
+                    PARTITION BY LOWER(BTRIM(p.email))
+                    ORDER BY
+                        CASE WHEN EXISTS (SELECT 1 FROM auth.users u WHERE u.id::TEXT = p.id) THEN 0 ELSE 1 END,
+                        p.joined_at DESC NULLS LAST,
+                        p.id
+                ) AS rn
+            FROM public.profiles p
+        ) keep
+          ON keep.norm_email = dup.norm_email
+         AND keep.rn = 1
+        WHERE dup.rn > 1
+    LOOP
+        UPDATE public.profiles AS keep_p
+        SET workspace_ids = (
+            SELECT ARRAY(
+                SELECT DISTINCT ws_id
+                FROM UNNEST(COALESCE(keep_p.workspace_ids, '{}') || COALESCE(dup_p.workspace_ids, '{}')) AS ws_id
+                ORDER BY ws_id
+            )
+        )
+        FROM public.profiles AS dup_p
+        WHERE keep_p.id = v_dup.keep_id
+          AND dup_p.id = v_dup.dup_id;
+
+        IF v_dup.dup_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+           AND v_dup.keep_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+            INSERT INTO public.workspace_members (workspace_id, user_id, role, status, created_at)
+            SELECT workspace_id, v_dup.keep_id::UUID, role, status, created_at
+            FROM public.workspace_members
+            WHERE user_id = v_dup.dup_id::UUID
+            ON CONFLICT (workspace_id, user_id) DO NOTHING;
+
+            DELETE FROM public.workspace_members WHERE user_id = v_dup.dup_id::UUID;
+            UPDATE public.workspaces SET created_by = v_dup.keep_id::UUID WHERE created_by = v_dup.dup_id::UUID;
+            UPDATE public.workspace_invites SET invited_by = v_dup.keep_id::UUID WHERE invited_by = v_dup.dup_id::UUID;
+        END IF;
+
+        UPDATE public.tasks SET assignee_id = v_dup.keep_id WHERE assignee_id = v_dup.dup_id;
+        UPDATE public.time_entries SET user_id = v_dup.keep_id WHERE user_id = v_dup.dup_id;
+        DELETE FROM public.active_timers
+        WHERE user_id = v_dup.dup_id
+          AND EXISTS (SELECT 1 FROM public.active_timers WHERE user_id = v_dup.keep_id);
+        UPDATE public.active_timers SET user_id = v_dup.keep_id WHERE user_id = v_dup.dup_id;
+        UPDATE public.audit_events SET actor_id = v_dup.keep_id WHERE actor_id = v_dup.dup_id;
+        DELETE FROM public.profiles WHERE id = v_dup.dup_id;
+    END LOOP;
+END;
+$$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS profiles_email_unique_idx
+    ON public.profiles (LOWER(BTRIM(email)));
 
 UPDATE public.workspaces AS workspace
 SET created_by = membership.user_id
@@ -313,18 +414,9 @@ BEGIN
 
     IF NOT EXISTS (
         SELECT 1
-        FROM public.workspace_members AS membership
-        WHERE membership.user_id = v_user_id
-          AND membership.status = 'active'
+        FROM public.workspaces AS workspace
+        WHERE workspace.created_by = v_user_id
     ) THEN
-        IF EXISTS (
-            SELECT 1
-            FROM public.workspace_members AS membership
-            WHERE membership.user_id = v_user_id
-        ) THEN
-            RAISE EXCEPTION 'Workspace access is inactive. Ask a workspace admin to reactivate it.';
-        END IF;
-
         IF BTRIM(COALESCE(p_workspace_id, '')) = ''
            OR BTRIM(COALESCE(p_workspace_name, '')) = '' THEN
             RAISE EXCEPTION 'A workspace name is required.';
@@ -350,6 +442,38 @@ BEGIN
       AND membership.status = 'active'
     ORDER BY membership.created_at, membership.workspace_id
     LIMIT 1;
+
+    -- If an earlier profile exists with the same normalized email under a different id,
+    -- migrate its references onto v_user_id so no duplicate email row is ever created.
+    IF EXISTS (
+        SELECT 1
+        FROM public.profiles AS existing_profile
+        WHERE LOWER(BTRIM(existing_profile.email)) = v_email
+          AND existing_profile.id <> v_user_id::TEXT
+    ) THEN
+        UPDATE public.tasks
+        SET assignee_id = v_user_id::TEXT
+        WHERE assignee_id IN (
+            SELECT id FROM public.profiles WHERE LOWER(BTRIM(email)) = v_email AND id <> v_user_id::TEXT
+        );
+        UPDATE public.time_entries
+        SET user_id = v_user_id::TEXT
+        WHERE user_id IN (
+            SELECT id FROM public.profiles WHERE LOWER(BTRIM(email)) = v_email AND id <> v_user_id::TEXT
+        );
+        DELETE FROM public.active_timers
+        WHERE user_id IN (
+            SELECT id FROM public.profiles WHERE LOWER(BTRIM(email)) = v_email AND id <> v_user_id::TEXT
+        );
+        UPDATE public.audit_events
+        SET actor_id = v_user_id::TEXT
+        WHERE actor_id IN (
+            SELECT id FROM public.profiles WHERE LOWER(BTRIM(email)) = v_email AND id <> v_user_id::TEXT
+        );
+        DELETE FROM public.profiles
+        WHERE LOWER(BTRIM(email)) = v_email
+          AND id <> v_user_id::TEXT;
+    END IF;
 
     INSERT INTO public.profiles (
         id, workspace_ids, name, email, role, status, joined_at, avatar, timezone, time_format
@@ -734,3 +858,34 @@ GRANT EXECUTE ON FUNCTION public.register_workspace_account(TEXT, TEXT, TEXT, TE
 GRANT EXECUTE ON FUNCTION public.invite_workspace_member(TEXT, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_workspace_member(TEXT, UUID, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_my_profile(TEXT, TEXT, TEXT, TEXT) TO authenticated;
+
+DO $$
+DECLARE
+    v_table TEXT;
+    v_tables TEXT[] := ARRAY[
+        'workspaces',
+        'profiles',
+        'workspace_members',
+        'projects',
+        'tasks',
+        'tags',
+        'time_entries',
+        'active_timers',
+        'audit_events'
+    ];
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+        FOREACH v_table IN ARRAY v_tables LOOP
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_publication_tables
+                WHERE pubname = 'supabase_realtime'
+                  AND schemaname = 'public'
+                  AND tablename = v_table
+            ) THEN
+                EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', v_table);
+            END IF;
+        END LOOP;
+    END IF;
+END;
+$$;

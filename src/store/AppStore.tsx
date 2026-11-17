@@ -178,14 +178,18 @@ export function AppStoreProvider({
         const remoteData = await fetchAppDataFromSupabase(sessionId);
         if (!isMounted) return;
         if (remoteData) {
-          setData((current) => ({
-            ...remoteData,
-            activeWorkspaceId: remoteData.workspaces.some(
-              (workspace) => workspace.id === current.activeWorkspaceId,
-            )
-              ? current.activeWorkspaceId
-              : remoteData.activeWorkspaceId,
-          }));
+          const savedWorkspaceId = sessionStorage.getItem(`timeflow-active-workspace-${sessionId}`);
+          setData((current) => {
+            const preferredId = current.activeWorkspaceId || savedWorkspaceId || "";
+            return {
+              ...remoteData,
+              activeWorkspaceId: remoteData.workspaces.some(
+                (workspace) => workspace.id === preferredId,
+              )
+                ? preferredId
+                : remoteData.activeWorkspaceId,
+            };
+          });
           setDataError("");
         } else {
           setData(emptyData);
@@ -359,7 +363,19 @@ export function AppStoreProvider({
       ...current,
       activeTimer: newTimer,
     }));
-    reportSyncError("save timer to Supabase", syncActiveTimerToSupabase(newTimer));
+    void syncActiveTimerToSupabase(newTimer, newTimer.userId, "start").catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "Could not start timer in Supabase.";
+      setTimerError(
+        message.toLowerCase().includes("duplicate") || message.includes("23505")
+          ? "A timer is already active for your account."
+          : `Could not start timer: ${message}`,
+      );
+      setData((current) =>
+        current.activeTimer?.id === newTimer.id
+          ? { ...current, activeTimer: undefined }
+          : current,
+      );
+    });
     queueMicrotask(() => {
       timerLock.current = false;
       setTimerBusy(false);
@@ -719,7 +735,10 @@ export function AppStoreProvider({
         setData(emptyData);
         setDataError("");
       },
-      switchWorkspace: (activeWorkspaceId) =>
+      switchWorkspace: (activeWorkspaceId) => {
+        if (sessionId) {
+          sessionStorage.setItem(`timeflow-active-workspace-${sessionId}`, activeWorkspaceId);
+        }
         setData((current) => {
           if (!currentUser?.workspaceIds.includes(activeWorkspaceId)) return current;
           return {
@@ -735,7 +754,8 @@ export function AppStoreProvider({
                 : user;
             }),
           };
-        }),
+        });
+      },
       startTimer,
       pauseTimer,
       resumeTimer,

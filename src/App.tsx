@@ -59,8 +59,26 @@ import {
 import type { AppData, EntryInput, Page, Project, Segment, Tag, Task, TimeEntry, User } from "./types";
 
 const id = (prefix: string) => `${prefix}-${Date.now()}`;
-const dateKey = (date: Date | string) => {
+const safeTimeZone = (timezone?: string) => {
+  if (!timezone) return undefined;
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: timezone });
+    return timezone;
+  } catch {
+    return undefined;
+  }
+};
+const dateKey = (date: Date | string, timezone?: string) => {
   const d = new Date(date);
+  const tz = safeTimeZone(timezone);
+  if (tz) {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  }
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 const minutesBetween = (start: string, end?: string) =>
@@ -78,10 +96,63 @@ const breakMinutes = (entry: TimeEntry) =>
     .reduce((sum, segment) => sum + minutesBetween(segment.start, segment.end), 0);
 const fmtDuration = (minutes: number) =>
   `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
-const fmtClock = (iso: string) =>
-  new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-const fmtDate = (iso: string) =>
-  new Date(iso).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+const fmtClock = (iso: string | Date, timezone?: string, timeFormat?: User["timeFormat"]) => {
+  const tz = safeTimeZone(timezone);
+  return new Date(iso).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: timeFormat ? timeFormat !== "24h" : undefined,
+    ...(tz ? { timeZone: tz } : {}),
+  });
+};
+const fmtDate = (iso: string | Date, timezone?: string) => {
+  const tz = safeTimeZone(timezone);
+  return new Date(iso).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    ...(tz ? { timeZone: tz } : {}),
+  });
+};
+const fmtTimeInput = (iso: string, timezone?: string) => {
+  const tz = safeTimeZone(timezone);
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    ...(tz ? { timeZone: tz } : {}),
+  }).formatToParts(new Date(iso));
+  const hour = parts.find((p) => p.type === "hour")?.value || "00";
+  const minute = parts.find((p) => p.type === "minute")?.value || "00";
+  return `${hour === "24" ? "00" : hour}:${minute}`;
+};
+const zonedDateTimeToDate = (day: string, time: string, timezone?: string) => {
+  const tz = safeTimeZone(timezone);
+  if (!tz) return new Date(`${day}T${time}`);
+  const [y, m, d] = day.split("-").map(Number);
+  const [hh, mm] = time.split(":").map(Number);
+  const utcGuess = Date.UTC(y, m - 1, d, hh, mm, 0);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(utcGuess));
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value || 0);
+  const zonedAsUtc = Date.UTC(
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    get("hour") === 24 ? 0 : get("hour"),
+    get("minute"),
+    get("second"),
+  );
+  return new Date(utcGuess - (zonedAsUtc - utcGuess));
+};
 const startOfWeek = (value = new Date()) => {
   const d = new Date(value);
   const day = d.getDay() || 7;
@@ -90,6 +161,28 @@ const startOfWeek = (value = new Date()) => {
   return d;
 };
 const cn = (...values: Array<string | false | undefined>) => values.filter(Boolean).join(" ");
+const readDraft = <T,>(key: string, fallback: T): T => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+const writeDraft = (key: string, value: unknown) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore storage quota errors
+  }
+};
+const clearDraft = (key: string) => {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+};
 
 const pageMeta: Record<Page, { title: string; subtitle: string }> = {
   dashboard: { title: "Dashboard", subtitle: "A clear view of your week" },
@@ -1042,7 +1135,28 @@ const navItems: Array<{ page: Page; label: string; icon: typeof Activity; admin?
 
 function AppShell() {
   const { data, currentUser, logout, switchWorkspace, dataError } = useAppStore();
-  const [page, setPage] = useState<Page>("dashboard");
+  const isAdmin = currentUser?.role === "admin";
+  const resolvePage = (): Page => {
+    const fromPath = window.location.pathname.replace(/^\/+|\/+$/g, "") as Page;
+    const fromStorage = sessionStorage.getItem("timeflow-active-page") as Page | null;
+    const candidate = navItems.some((item) => item.page === fromPath)
+      ? fromPath
+      : fromStorage && navItems.some((item) => item.page === fromStorage)
+        ? fromStorage
+        : "dashboard";
+    const match = navItems.find((item) => item.page === candidate);
+    if (!match || (match.admin && !isAdmin)) return "dashboard";
+    return match.page;
+  };
+  const [page, setPage] = useState<Page>(resolvePage);
+  useEffect(() => {
+    const onPopState = () => setPage(resolvePage());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [isAdmin]);
+  useEffect(() => {
+    sessionStorage.setItem("timeflow-active-page", page);
+  }, [page]);
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -1087,6 +1201,10 @@ function AppShell() {
   const navigate = (next: Page) => {
     setPage(next);
     setMobileOpen(false);
+    sessionStorage.setItem("timeflow-active-page", next);
+    if (window.location.pathname !== `/${next}`) {
+      window.history.pushState({}, "", `/${next}`);
+    }
   };
   return (
     <div className="app-shell">
@@ -1169,6 +1287,7 @@ function AppShell() {
             <p>{pageMeta[page].subtitle}</p>
           </div>
           <div className="topbar-actions">
+            <LiveUserClock timezone={currentUser?.timezone} timeFormat={currentUser?.timeFormat} />
             {data.activeTimer && page !== "tracker" && (
               <button className="mini-timer" onClick={() => setPage("tracker")}>
                 <span className="live-dot" />
@@ -1244,7 +1363,8 @@ function AppShell() {
                               {actor?.name || "Team"} · {event.target}
                             </span>
                             <small style={{ fontSize: "11px", color: "#94a3b8" }}>
-                              {fmtDate(event.createdAt)} · {fmtClock(event.createdAt)}
+                              {fmtDate(event.createdAt, currentUser?.timezone)} ·{" "}
+                              {fmtClock(event.createdAt, currentUser?.timezone, currentUser?.timeFormat)}
                             </small>
                           </button>
                         );
@@ -1305,6 +1425,43 @@ function AppShell() {
   );
 }
 
+function LiveUserClock({
+  timezone,
+  timeFormat,
+}: {
+  timezone?: string;
+  timeFormat?: User["timeFormat"];
+}) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const tz = safeTimeZone(timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return (
+    <span
+      data-testid="topbar-clock"
+      title={`UTC: ${now.toISOString()}`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "6px",
+        padding: "6px 10px",
+        borderRadius: "8px",
+        background: "#f1f5f9",
+        color: "#334155",
+        fontSize: "12px",
+        fontWeight: 500,
+        whiteSpace: "nowrap",
+      }}
+    >
+      <Clock3 size={14} />
+      <span>{fmtClock(now, tz, timeFormat)}</span>
+      <small style={{ color: "#64748b" }}>{tz}</small>
+    </span>
+  );
+}
+
 function formatSegmentDuration(segments: Segment[] | undefined, type: Segment["type"], now: number) {
   const totalSeconds = Math.floor(
     (segments
@@ -1345,10 +1502,11 @@ function TimerClock({ type = "work" }: { type?: Segment["type"] }) {
 
 function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
   const { data, currentUser } = useAppStore();
+  const tz = currentUser?.timezone;
   const visible = data.entries.filter(
     (entry) => currentUser?.role === "admin" || entry.userId === currentUser?.id,
   );
-  const today = visible.filter((entry) => dateKey(entry.start) === dateKey(new Date()));
+  const today = visible.filter((entry) => dateKey(entry.start, tz) === dateKey(new Date(), tz));
   const monday = startOfWeek().getTime();
   const week = visible.filter((entry) => new Date(entry.start).getTime() >= monday);
   const daily = Array.from({ length: 7 }, (_, index) => {
@@ -1358,7 +1516,7 @@ function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
       day: date.toLocaleDateString([], { weekday: "short" }),
       hours: +(
         visible
-          .filter((e) => dateKey(e.start) === dateKey(date))
+          .filter((e) => dateKey(e.start, tz) === dateKey(date, tz))
           .reduce((sum, e) => sum + entryMinutes(e), 0) / 60
       ).toFixed(1),
     };
@@ -1518,10 +1676,19 @@ function TrackerPage() {
     retryTimerAction,
     clearTimerError,
   } = store;
-  const [description, setDescription] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [taskId, setTaskId] = useState("");
-  const [tagIds, setTagIds] = useState<string[]>([]);
+  const trackerDraftKey = `timeflow-draft-tracker-${data.activeWorkspaceId || "default"}`;
+  const [description, setDescription] = useState(
+    () => readDraft(trackerDraftKey, { description: "", projectId: "", taskId: "", tagIds: [] as string[] }).description,
+  );
+  const [projectId, setProjectId] = useState(
+    () => readDraft(trackerDraftKey, { description: "", projectId: "", taskId: "", tagIds: [] as string[] }).projectId,
+  );
+  const [taskId, setTaskId] = useState(
+    () => readDraft(trackerDraftKey, { description: "", projectId: "", taskId: "", tagIds: [] as string[] }).taskId,
+  );
+  const [tagIds, setTagIds] = useState<string[]>(
+    () => readDraft(trackerDraftKey, { description: "", projectId: "", taskId: "", tagIds: [] as string[] }).tagIds,
+  );
   const [entryModal, setEntryModal] = useState<TimeEntry | "new" | null>(null);
   const ownEntries =
     currentUser?.role === "admin"
@@ -1534,15 +1701,33 @@ function TrackerPage() {
       setProjectId(active.projectId || "");
       setTaskId(active.taskId || "");
       setTagIds(active.tagIds);
+    } else {
+      const draft = readDraft(trackerDraftKey, {
+        description: "",
+        projectId: "",
+        taskId: "",
+        tagIds: [] as string[],
+      });
+      setDescription(draft.description);
+      setProjectId(draft.projectId);
+      setTaskId(draft.taskId);
+      setTagIds(draft.tagIds);
     }
-  }, [active?.id]);
-  const begin = () =>
+  }, [active?.id, trackerDraftKey]);
+  useEffect(() => {
+    if (!active) {
+      writeDraft(trackerDraftKey, { description, projectId, taskId, tagIds });
+    }
+  }, [active, trackerDraftKey, description, projectId, taskId, tagIds]);
+  const begin = () => {
+    clearDraft(trackerDraftKey);
     startTimer({
       description,
       projectId: projectId || undefined,
       taskId: taskId || undefined,
       tagIds,
     });
+  };
   return (
     <div className="page-stack">
       <section className={cn("timer-panel", active && "timer-panel-active")}>
@@ -1701,7 +1886,8 @@ function TrackerPage() {
         {active && (
           <div className="segment-summary">
             <span>
-              <Activity size={15} /> Session started {fmtClock(active.startedAt)}
+              <Activity size={15} /> Session started{" "}
+              {fmtClock(active.startedAt, currentUser?.timezone, currentUser?.timeFormat)}
             </span>
             <span>
               {active.segments.filter((segment) => segment.type === "work").length} work segments
@@ -1740,7 +1926,9 @@ function EntryTable({
   entries: TimeEntry[];
   onEdit: (entry: TimeEntry) => void;
 }) {
-  const { data, deleteEntry } = useAppStore();
+  const { data, currentUser, deleteEntry } = useAppStore();
+  const tz = currentUser?.timezone;
+  const tf = currentUser?.timeFormat;
   const [filters, setFilters] = useState<EntryFilters>({ sort: "newest" });
   const [page, setPage] = useState(0);
   const [rows, setRows] = useState(10);
@@ -1901,9 +2089,12 @@ function EntryTable({
                         <span className="muted">No project</span>
                       )}
                     </td>
-                    <td>{fmtDate(entry.start)}</td>
-                    <td>
-                      {fmtClock(entry.start)} – {fmtClock(entry.end)}
+                    <td>{fmtDate(entry.start, tz)}</td>
+                    <td title={`UTC: ${new Date(entry.start).toISOString()} – ${new Date(entry.end).toISOString()}`}>
+                      {fmtClock(entry.start, tz, tf)} – {fmtClock(entry.end, tz, tf)}
+                      <small style={{ display: "block", color: "#94a3b8", fontSize: "11px" }}>
+                        UTC {fmtClock(entry.start, "UTC", "24h")}–{fmtClock(entry.end, "UTC", "24h")}
+                      </small>
                     </td>
                     <td>{fmtDuration(breakMinutes(entry))}</td>
                     <td>
@@ -1977,35 +2168,72 @@ function EntryModal({
   onClose: () => void;
 }) {
   const { data, currentUser, saveEntry } = useAppStore();
+  const tz = currentUser?.timezone;
+  const tf = currentUser?.timeFormat;
   const initial = initialDate || new Date(entry?.start || Date.now());
-  const [projectId, setProjectId] = useState(entry?.projectId || "");
-  const [tagIds, setTagIds] = useState(entry?.tagIds || []);
+  const dateValue = dateKey(initial, tz);
+  const draftKey = `timeflow-draft-entry-${data.activeWorkspaceId || "default"}-${entry?.id || "new"}`;
+  const initialDraft = readDraft(draftKey, {
+    description: entry?.description || "",
+    date: entry ? dateKey(entry.start, tz) : dateValue,
+    startTime: entry ? fmtTimeInput(entry.start, tz) : "09:00",
+    endTime: entry ? fmtTimeInput(entry.end, tz) : "10:00",
+    projectId: entry?.projectId || "",
+    taskId: entry?.taskId || "",
+    tagIds: entry?.tagIds || [],
+    notes: entry?.notes || "",
+    correctionReason: "",
+  });
+  const [description, setDescription] = useState(initialDraft.description);
+  const [date, setDate] = useState(initialDraft.date);
+  const [startTime, setStartTime] = useState(initialDraft.startTime);
+  const [endTime, setEndTime] = useState(initialDraft.endTime);
+  const [projectId, setProjectId] = useState(initialDraft.projectId);
+  const [taskId, setTaskId] = useState(initialDraft.taskId);
+  const [tagIds, setTagIds] = useState<string[]>(initialDraft.tagIds);
+  const [notes, setNotes] = useState(initialDraft.notes);
   const [overlap, setOverlap] = useState<TimeEntry | null>(null);
   const [pending, setPending] = useState<EntryInput | null>(null);
-  const [correctionReason, setCorrectionReason] = useState("");
+  const [correctionReason, setCorrectionReason] = useState(initialDraft.correctionReason);
   const isAdminCorrection =
     Boolean(entry) && currentUser?.role === "admin" && entry?.userId !== currentUser.id;
+  useEffect(() => {
+    writeDraft(draftKey, {
+      description,
+      date,
+      startTime,
+      endTime,
+      projectId,
+      taskId,
+      tagIds,
+      notes,
+      correctionReason,
+    });
+  }, [draftKey, description, date, startTime, endTime, projectId, taskId, tagIds, notes, correctionReason]);
+  const cancel = () => {
+    clearDraft(draftKey);
+    onClose();
+  };
   const persist = (value: EntryInput) => {
     saveEntry(value, isAdminCorrection ? correctionReason : undefined);
+    clearDraft(draftKey);
     onClose();
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const day = String(form.get("date"));
-    let start = new Date(`${day}T${String(form.get("start"))}`);
-    let end = new Date(`${day}T${String(form.get("end"))}`);
+    const start = zonedDateTimeToDate(date, startTime, tz);
+    const end = zonedDateTimeToDate(date, endTime, tz);
     if (end <= start) end.setDate(end.getDate() + 1);
     const value: EntryInput = {
       id: entry?.id,
       userId: entry?.userId || currentUser!.id,
-      description: String(form.get("description")),
+      description,
       projectId: projectId || undefined,
-      taskId: String(form.get("taskId")) || undefined,
+      taskId: taskId || undefined,
       tagIds,
       start: start.toISOString(),
       end: end.toISOString(),
-      notes: String(form.get("notes") || ""),
+      notes,
       source: entry?.source || "manual",
       segments: [
         { id: id("segment"), type: "work", start: start.toISOString(), end: end.toISOString() },
@@ -2023,7 +2251,6 @@ function EntryModal({
       setPending(value);
     } else persist(value);
   };
-  const dateValue = dateKey(initial);
   return (
     <Modal
       title={entry ? "Edit time entry" : "Add time entry"}
@@ -2036,7 +2263,7 @@ function EntryModal({
           <div>
             <strong>This overlaps another entry</strong>
             <p>
-              {overlap.description}, {fmtClock(overlap.start)}–{fmtClock(overlap.end)}. You can save
+              {overlap.description}, {fmtClock(overlap.start, tz, tf)}–{fmtClock(overlap.end, tz, tf)}. You can save
               anyway.
             </p>
           </div>
@@ -2048,7 +2275,8 @@ function EntryModal({
           <input
             name="description"
             required
-            defaultValue={entry?.description}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
             placeholder="What did you work on?"
           />
         </label>
@@ -2058,7 +2286,8 @@ function EntryModal({
             name="date"
             type="date"
             required
-            defaultValue={entry ? dateKey(entry.start) : dateValue}
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
           />
         </label>
         <div className="field-pair">
@@ -2068,7 +2297,8 @@ function EntryModal({
               name="start"
               type="time"
               required
-              defaultValue={entry ? new Date(entry.start).toTimeString().slice(0, 5) : "09:00"}
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
             />
           </label>
           <label className="field">
@@ -2077,14 +2307,18 @@ function EntryModal({
               name="end"
               type="time"
               required
-              defaultValue={entry ? new Date(entry.end).toTimeString().slice(0, 5) : "10:00"}
+              value={endTime}
+              onChange={(e) => setEndTime(e.target.value)}
             />
           </label>
         </div>
         <SelectField
           label="Project"
           value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
+          onChange={(e) => {
+            setProjectId(e.target.value);
+            setTaskId("");
+          }}
         >
           <option value="">No project</option>
           {data.projects
@@ -2095,7 +2329,12 @@ function EntryModal({
               </option>
             ))}
         </SelectField>
-        <SelectField label="Task" name="taskId" defaultValue={entry?.taskId || ""}>
+        <SelectField
+          label="Task"
+          name="taskId"
+          value={taskId}
+          onChange={(e) => setTaskId(e.target.value)}
+        >
           <option value="">No task</option>
           {data.tasks
             .filter((task) => task.projectId === projectId)
@@ -2131,7 +2370,12 @@ function EntryModal({
           <span>
             Notes <small>optional</small>
           </span>
-          <textarea name="notes" defaultValue={entry?.notes} placeholder="Add context or links" />
+          <textarea
+            name="notes"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Add context or links"
+          />
         </label>
         {isAdminCorrection && (
           <label className="field field-full correction-reason">
@@ -2145,7 +2389,7 @@ function EntryModal({
           </label>
         )}
         <footer className="modal-actions">
-          <Button type="button" variant="ghost" onClick={onClose}>
+          <Button type="button" variant="ghost" onClick={cancel}>
             Cancel
           </Button>
           {overlap && pending ? (
@@ -2524,6 +2768,8 @@ function TagsPage() {
 
 function CalendarPage() {
   const { data, currentUser } = useAppStore();
+  const tz = currentUser?.timezone;
+  const tf = currentUser?.timeFormat;
   const [view, setView] = useState<"day" | "week" | "month">("week");
   const [cursor, setCursor] = useState(new Date());
   const [entryModal, setEntryModal] = useState<TimeEntry | "new" | null>(null);
@@ -2578,14 +2824,14 @@ function CalendarPage() {
       </div>
       <section className={cn("calendar-grid", `calendar-${view}`)}>
         {days.map((day) => {
-          const entries = own.filter((entry) => dateKey(entry.start) === dateKey(day));
+          const entries = own.filter((entry) => dateKey(entry.start, tz) === dateKey(day, tz));
           const outside = view === "month" && day.getMonth() !== cursor.getMonth();
           return (
             <div
               className={cn(
                 "calendar-day",
                 outside && "outside",
-                dateKey(day) === dateKey(new Date()) && "today",
+                dateKey(day, tz) === dateKey(new Date(), tz) && "today",
               )}
               key={day.toISOString()}
               onDoubleClick={() => {
@@ -2609,9 +2855,12 @@ function CalendarPage() {
                     <button
                       key={entry.id}
                       style={{ borderLeftColor: project?.color || "#94a3b8" }}
-                      onClick={() => setEntryModal(entry)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setEntryModal(entry);
+                      }}
                     >
-                      <span>{view !== "month" && fmtClock(entry.start)}</span>
+                      <span>{view !== "month" && fmtClock(entry.start, tz, tf)}</span>
                       <strong>{entry.description}</strong>
                       {view !== "month" && <small>{fmtDuration(entryMinutes(entry))}</small>}
                     </button>
@@ -2646,6 +2895,8 @@ function CalendarPage() {
 
 function TimesheetPage() {
   const { data, currentUser } = useAppStore();
+  const tz = currentUser?.timezone;
+  const tf = currentUser?.timeFormat;
   const [week, setWeek] = useState(startOfWeek());
   const [editing, setEditing] = useState<TimeEntry | null>(null);
   const days = Array.from({ length: 7 }, (_, index) => {
@@ -2655,7 +2906,7 @@ function TimesheetPage() {
   });
   const own = data.entries.filter((entry) => entry.userId === currentUser?.id);
   const total = own
-    .filter((entry) => days.some((day) => dateKey(day) === dateKey(entry.start)))
+    .filter((entry) => days.some((day) => dateKey(day, tz) === dateKey(entry.start, tz)))
     .reduce((sum, entry) => sum + entryMinutes(entry), 0);
   return (
     <div className="page-stack">
@@ -2688,10 +2939,10 @@ function TimesheetPage() {
       </div>
       <section className="timesheet-grid">
         {days.map((day) => {
-          const entries = own.filter((entry) => dateKey(entry.start) === dateKey(day));
+          const entries = own.filter((entry) => dateKey(entry.start, tz) === dateKey(day, tz));
           return (
             <article
-              className={cn("timesheet-day", dateKey(day) === dateKey(new Date()) && "today")}
+              className={cn("timesheet-day", dateKey(day, tz) === dateKey(new Date(), tz) && "today")}
               key={day.toISOString()}
             >
               <header>
@@ -2713,8 +2964,8 @@ function TimesheetPage() {
                     <span>
                       <strong>{entry.description}</strong>
                       <small>
-                        {project?.name || "No project"} · {fmtClock(entry.start)}–
-                        {fmtClock(entry.end)}
+                        {project?.name || "No project"} · {fmtClock(entry.start, tz, tf)}–
+                        {fmtClock(entry.end, tz, tf)}
                       </small>
                     </span>
                     <b>{fmtDuration(entryMinutes(entry))}</b>
@@ -2749,13 +3000,16 @@ function ReportsPage() {
       (!tag || entry.tagIds.includes(tag)) &&
       (currentUser?.role === "admin" || entry.userId === currentUser?.id),
   );
+  const tz = currentUser?.timezone;
+  const tf = currentUser?.timeFormat;
   const rows = filtered.map((entry) => ({
-    Date: fmtDate(entry.start),
+    Date: fmtDate(entry.start, tz),
     Member: data.users.find((u) => u.id === entry.userId)?.name || "",
     Description: entry.description,
     Project: data.projects.find((p) => p.id === entry.projectId)?.name || "",
-    Start: fmtClock(entry.start),
-    End: fmtClock(entry.end),
+    Start: fmtClock(entry.start, tz, tf),
+    End: fmtClock(entry.end, tz, tf),
+    "UTC Start": new Date(entry.start).toISOString(),
     Break: fmtDuration(breakMinutes(entry)),
     Duration: fmtDuration(entryMinutes(entry)),
   }));
@@ -2941,6 +3195,8 @@ function ReportsPage() {
 }
 
 function WeeklyReport({ entries }: { entries: TimeEntry[] }) {
+  const { currentUser } = useAppStore();
+  const tz = currentUser?.timezone;
   const week = startOfWeek();
   const data = Array.from({ length: 7 }, (_, index) => {
     const d = new Date(week);
@@ -2949,7 +3205,7 @@ function WeeklyReport({ entries }: { entries: TimeEntry[] }) {
       day: d.toLocaleDateString([], { weekday: "short" }),
       hours: +(
         entries
-          .filter((entry) => dateKey(entry.start) === dateKey(d))
+          .filter((entry) => dateKey(entry.start, tz) === dateKey(d, tz))
           .reduce((sum, entry) => sum + entryMinutes(entry), 0) / 60
       ).toFixed(1),
     };
@@ -3183,7 +3439,9 @@ function TeamPage() {
 }
 
 function AuditPage() {
-  const { data } = useAppStore();
+  const { data, currentUser } = useAppStore();
+  const tz = currentUser?.timezone;
+  const tf = currentUser?.timeFormat;
   const [search, setSearch] = useState("");
   const events = data.audit.filter((event) =>
     `${event.action} ${event.target} ${event.detail}`.toLowerCase().includes(search.toLowerCase()),
@@ -3234,7 +3492,9 @@ function AuditPage() {
                   {user?.name || "Unknown"} · {event.target}
                 </span>
               </div>
-              <time>{new Date(event.createdAt).toLocaleString()}</time>
+              <time>
+                {fmtDate(event.createdAt, tz)} {fmtClock(event.createdAt, tz, tf)}
+              </time>
             </article>
           );
         })}
@@ -3246,6 +3506,11 @@ function AuditPage() {
 function SettingsPage() {
   const { data, currentUser, updateProfile } = useAppStore();
   const [saved, setSaved] = useState(false);
+  const [previewNow, setPreviewNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setPreviewNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
   if (!currentUser) return null;
   return (
     <div className="settings-layout">
@@ -3290,11 +3555,22 @@ function SettingsPage() {
               <input value={currentUser.email} disabled />
             </label>
             <SelectField label="Timezone" name="timezone" defaultValue={currentUser.timezone}>
-              <option>{Intl.DateTimeFormat().resolvedOptions().timeZone}</option>
-              <option>America/New_York</option>
-              <option>America/Chicago</option>
-              <option>Europe/London</option>
-              <option>Asia/Singapore</option>
+              {Array.from(
+                new Set([
+                  currentUser.timezone,
+                  Intl.DateTimeFormat().resolvedOptions().timeZone,
+                  "UTC",
+                  "Asia/Manila",
+                  "Asia/Singapore",
+                  "America/New_York",
+                  "America/Chicago",
+                  "Europe/London",
+                ].filter(Boolean)),
+              ).map((tz) => (
+                <option key={tz} value={tz}>
+                  {tz}
+                </option>
+              ))}
             </SelectField>
             <SelectField
               label="Time format"
@@ -3304,6 +3580,24 @@ function SettingsPage() {
               <option value="12h">12-hour</option>
               <option value="24h">24-hour</option>
             </SelectField>
+            <div
+              className="field field-full"
+              style={{
+                padding: "10px 12px",
+                borderRadius: "8px",
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                fontSize: "13px",
+                color: "#334155",
+              }}
+            >
+              <strong>Live Time Preview ({currentUser.timezone})</strong>
+              <span>
+                Displayed: {fmtDate(previewNow, currentUser.timezone)}{" "}
+                {fmtClock(previewNow, currentUser.timezone, currentUser.timeFormat)} · Stored UTC:{" "}
+                {previewNow.toISOString()}
+              </span>
+            </div>
             <div className="settings-save">
               <Button type="submit">
                 {saved ? (
@@ -3347,7 +3641,9 @@ function SettingsPage() {
 }
 
 function RecentEntries({ entries, title }: { entries: TimeEntry[]; title: string }) {
-  const { data } = useAppStore();
+  const { data, currentUser } = useAppStore();
+  const tz = currentUser?.timezone;
+  const tf = currentUser?.timeFormat;
   return (
     <section className="card recent-card">
       <div className="card-header">
@@ -3369,7 +3665,8 @@ function RecentEntries({ entries, title }: { entries: TimeEntry[]; title: string
             <div>
               <strong>{entry.description}</strong>
               <span>
-                {project?.name || "No project"} · {fmtDate(entry.start)}
+                {project?.name || "No project"} · {fmtDate(entry.start, tz)} ·{" "}
+                {fmtClock(entry.start, tz, tf)}–{fmtClock(entry.end, tz, tf)}
               </span>
             </div>
             <b>{fmtDuration(entryMinutes(entry))}</b>

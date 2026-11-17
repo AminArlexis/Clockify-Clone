@@ -346,7 +346,11 @@ export async function deleteTagFromSupabase(id: string) {
   if (error) throw error;
 }
 
-export async function syncActiveTimerToSupabase(timer?: ActiveTimer, userId?: string) {
+export async function syncActiveTimerToSupabase(
+  timer?: ActiveTimer,
+  userId?: string,
+  mode: "start" | "update" = "update",
+) {
   const client = supabase;
   if (!client) throw new Error("Supabase is not configured.");
   if (!timer) {
@@ -355,21 +359,26 @@ export async function syncActiveTimerToSupabase(timer?: ActiveTimer, userId?: st
     if (error) throw error;
     return;
   }
-  const { error } = await client.from("active_timers").upsert(
-    {
-      id: timer.id,
-      workspace_id: timer.workspaceId,
-      user_id: timer.userId,
-      description: timer.description,
-      project_id: timer.projectId || null,
-      task_id: timer.taskId || null,
-      tag_ids: timer.tagIds,
-      started_at: timer.startedAt,
-      status: timer.status,
-      segments: timer.segments,
-    },
-    { onConflict: "user_id" },
-  );
+  const payload = {
+    id: timer.id,
+    workspace_id: timer.workspaceId,
+    user_id: timer.userId,
+    description: timer.description,
+    project_id: timer.projectId || null,
+    task_id: timer.taskId || null,
+    tag_ids: timer.tagIds,
+    started_at: timer.startedAt,
+    status: timer.status,
+    segments: timer.segments,
+  };
+  const { error } =
+    mode === "start"
+      ? await client.from("active_timers").insert(payload)
+      : await client
+          .from("active_timers")
+          .update(payload)
+          .eq("id", timer.id)
+          .eq("user_id", timer.userId);
   if (error) throw error;
 }
 

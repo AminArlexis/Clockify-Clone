@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
-import { fetchAppDataFromSupabase } from "../lib/supabaseSync";
+import { fetchAppDataFromSupabase, syncActiveTimerToSupabase } from "../lib/supabaseSync";
 import { createTestData } from "../test/fixtures";
 import { AppStoreProvider, useAppStore } from "./AppStore";
 
@@ -144,6 +144,24 @@ describe("shared application store", () => {
     expect(screen.getByTestId("role")).toHaveTextContent("admin");
     fireEvent.click(screen.getByText("workspace two"));
     expect(screen.getByTestId("role")).toHaveTextContent("member");
+  });
+
+  it("rejects repeated/duplicate backend timer start requests cleanly", async () => {
+    vi.mocked(syncActiveTimerToSupabase).mockRejectedValueOnce(
+      new Error('duplicate key value violates unique constraint "active_timers_user_key" (23505)'),
+    );
+    render(
+      <AppStoreProvider initialData={createTestData()} initialSessionId="u1">
+        <StoreHarness />
+      </AppStoreProvider>,
+    );
+    fireEvent.click(screen.getByText("start"));
+    await waitFor(() =>
+      expect(screen.getByTestId("error")).toHaveTextContent(
+        "A timer is already active for your account.",
+      ),
+    );
+    expect(screen.getByTestId("timer")).toHaveTextContent("none");
   });
 });
 

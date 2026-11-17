@@ -108,7 +108,17 @@ export function AppStoreProvider({
   const [timerBusy, setTimerBusy] = useState(false);
   const timerLock = useRef(false);
   const lastTimerAction = useRef<"pause" | "resume" | "stop" | null>(null);
-  const currentUser = data.users.find((user) => user.id === sessionId);
+  const currentUser = useMemo(() => {
+  const base = data.users.find((user) => user.id === sessionId);
+  if (!base) return undefined;
+  const membership = data.workspaceMemberships?.find(
+    (m) => m.userId === base.id && m.workspaceId === data.activeWorkspaceId,
+  );
+  // Kung walang membership sa active workspace, huwag bigyan ng admin
+  return membership
+    ? { ...base, role: membership.role, status: membership.status }
+    : { ...base, role: "member" as const };
+}, [data.users, data.workspaceMemberships, data.activeWorkspaceId, sessionId]);
 
   useEffect(() => {
     localStorage.removeItem(LEGACY_DATA_KEY);

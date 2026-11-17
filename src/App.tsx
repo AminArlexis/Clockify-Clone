@@ -457,7 +457,7 @@ function PublicLanding({ navigate }: { navigate: (path: string) => void }) {
     </div>
   );
 }
-
+const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value.trim());
 function AuthScreen({
   initialMode,
   navigate,
@@ -465,7 +465,7 @@ function AuthScreen({
   initialMode: AuthMode;
   navigate: (path: string) => void;
 }) {
-  const { login, register, dataError } = useAppStore();
+  const { login, register, logout, dataError } = useAppStore();
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState(() => {
@@ -484,7 +484,7 @@ function AuthScreen({
   const [otpCode, setOtpCode] = useState("");
   const [verifiedUserId, setVerifiedUserId] = useState("");
   const [resending, setResending] = useState(false);
-  const [resendCooldown, setResendCooldown] = useState(0);
+   const [resendCooldown, setResendCooldown] = useState(0);
   useEffect(() => {
     setMode(initialMode);
   }, [initialMode]);
@@ -495,6 +495,16 @@ function AuthScreen({
     }, 1000);
     return () => window.clearInterval(timer);
   }, [resendCooldown]);
+  useEffect(() => {
+    if (initialMode !== "reset") return;
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    if (params.get("error_code") || params.get("error")) {
+      setError(
+        params.get("error_description") ||
+          "This reset link is invalid or has expired. Request a new one.",
+      );
+    }
+  }, [initialMode]);
   const changeMode = (next: AuthMode) => {
     setMode(next);
     setError("");
@@ -515,6 +525,11 @@ function AuthScreen({
       setError("Supabase is not configured. Add the project URL and anon key to .env.local.");
       return;
     }
+    if (mode !== "reset" && !isValidEmail(email)) {
+  setLoading(false);
+  setError("Enter a valid email address.");
+  return;
+}
     if (mode === "forgot") {
       void client.auth
         .resetPasswordForEmail(email, {
@@ -532,28 +547,36 @@ function AuthScreen({
         });
       return;
     }
-    if (mode === "reset") {
-      const password = String(form.get("password") || "");
-      const confirmation = String(form.get("confirmation") || "");
-      if (password !== confirmation) {
-        setError("Passwords must match.");
-        setLoading(false);
+   if (mode === "reset") {
+  const password = String(form.get("password") || "");
+  const confirmation = String(form.get("confirmation") || "");
+  if (password !== confirmation) {
+    setError("Passwords must match.");
+    setLoading(false);
+    return;
+  }
+  void client.auth
+    .getSession()
+    .then(async ({ data: sessionData }) => {
+      if (!sessionData.session) {
+        setError("This reset link is invalid or has expired. Request a new one.");
         return;
       }
-      void client.auth
-        .updateUser({ password })
-        .then(({ error: updateError }) => {
-          if (updateError) setError(updateError.message);
-          else setSent(true);
-        })
-        .catch((err: unknown) => {
-          setError(err instanceof Error ? err.message : "Could not update your password.");
-        })
-        .finally(() => {
-          setLoading(false);
-        });
-      return;
-    }
+      const { error: updateError } = await client.auth.updateUser({ password });
+      if (updateError) {
+        setError(updateError.message);
+        return;
+      }
+      await client.auth.signOut();
+      logout();
+      setSent(true);
+    })
+    .catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : "Could not update your password.");
+    })
+    .finally(() => setLoading(false));
+  return;
+}
     if (mode === "register") {
       const name = String(form.get("name") || "");
       const password = String(form.get("password") || "");
@@ -572,6 +595,11 @@ function AuthScreen({
               setError(signUpError.message);
               return;
             }
+            if (signUpData.user && (signUpData.user.identities?.length ?? 0) === 0) {
+  setLoading(false);
+  setError("This email is already registered. Please sign in instead.");
+  return;
+}
             if (signUpData.session) {
               // Naka-off ang Confirm email: gumawa ng account, tapos diretso sa login.
               await client.auth.signOut();
@@ -921,11 +949,8 @@ function AuthScreen({
                     : "Use the reset link sent to your email to choose a new password."}
                 </p>
               </div>
-              <Button
-                variant="secondary"
-                onClick={() => (mode === "reset" ? changeMode("login") : changeMode("reset"))}
-              >
-                {mode === "reset" ? "Return to login" : "Open reset form"}
+                           <Button variant="secondary" onClick={() => changeMode("login")}>
+                Return to login
               </Button>
             </div>
           ) : (
@@ -3387,7 +3412,7 @@ function Root() {
       </main>
     );
   }
-  if (currentUser) return <AppShell />;
+  if (currentUser && path !== "/reset") return <AppShell />;
   if (path === "/") return <PublicLanding navigate={navigate} />;
   const mode: AuthMode =
     path === "/register"

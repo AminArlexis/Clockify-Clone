@@ -2409,7 +2409,7 @@ function ProjectsPage() {
   const { data, currentUser, saveProject, archiveProject, saveTask } = useAppStore();
 const isAdmin = currentUser?.role === "admin";
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | "active" | "archived">("all");
+  const [filter, setFilter] = useState<"all" | "active" | "archived">("active");
   const [editing, setEditing] = useState<Project | "new" | null>(null);
   const [detail, setDetail] = useState<Project | null>(null);
   const [taskProject, setTaskProject] = useState<Project | null>(null);
@@ -2520,8 +2520,28 @@ const save = (event: FormEvent<HTMLFormElement>) => {
       <button
         onClick={() => archiveProject(project.id)}
         title={project.status === "active" ? "Archive" : "Restore"}
+        aria-label={project.status === "active" ? "Archive project" : "Restore project"}
+        style={
+          project.status === "archived"
+            ? {
+                width: "auto",
+                padding: "0 8px",
+                gap: "4px",
+                color: "#2563eb",
+                fontWeight: 600,
+                fontSize: "12px",
+              }
+            : undefined
+        }
       >
-        <Archive size={15} />
+        {project.status === "active" ? (
+          <Archive size={15} />
+        ) : (
+          <>
+            <RotateCcw size={14} />
+            <span>Restore</span>
+          </>
+        )}
       </button>
     </>
   )}
@@ -2670,6 +2690,7 @@ function TagsPage() {
   const { data, saveTag, deleteTag } = useAppStore();
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<Tag | "new" | null>(null);
+  const [tagError, setTagError] = useState("");
   const visible = data.tags.filter((tag) => tag.name.toLowerCase().includes(search.toLowerCase()));
   return (
     <div className="page-stack">
@@ -2682,7 +2703,12 @@ function TagsPage() {
             placeholder="Search tags"
           />
         </label>
-        <Button onClick={() => setEditing("new")}>
+        <Button
+          onClick={() => {
+            setTagError("");
+            setEditing("new");
+          }}
+        >
           <Plus size={16} /> New tag
         </Button>
       </div>
@@ -2714,7 +2740,12 @@ function TagsPage() {
                   </td>
                   <td>
                     <div className="row-actions">
-                      <button onClick={() => setEditing(tag)}>
+                      <button
+                        onClick={() => {
+                          setTagError("");
+                          setEditing(tag);
+                        }}
+                      >
                         <Pencil size={15} />
                       </button>
                       <button
@@ -2733,17 +2764,36 @@ function TagsPage() {
       {editing && (
         <Modal
           title={editing === "new" ? "Create tag" : "Edit tag"}
-          onClose={() => setEditing(null)}
+          onClose={() => {
+            setTagError("");
+            setEditing(null);
+          }}
         >
           <form
             className="modal-form"
             onSubmit={(event) => {
               event.preventDefault();
               const form = new FormData(event.currentTarget);
+              const cleanName = String(form.get("name")).trim();
+              if (!cleanName) {
+                setTagError("Tag name cannot be empty.");
+                return;
+              }
+              const currentId = editing === "new" ? "" : editing.id;
+              const duplicate = data.tags.some(
+                (candidate) =>
+                  candidate.id !== currentId &&
+                  candidate.name.trim().toLowerCase() === cleanName.toLowerCase(),
+              );
+              if (duplicate) {
+                setTagError(`A tag named "${cleanName}" already exists in this workspace.`);
+                return;
+              }
+              setTagError("");
               saveTag({
                 id: editing === "new" ? id("tag") : editing.id,
                 workspaceId: data.activeWorkspaceId,
-                name: String(form.get("name")),
+                name: cleanName,
                 color: String(form.get("color")),
               });
               setEditing(null);
@@ -2751,7 +2801,12 @@ function TagsPage() {
           >
             <label className="field field-full">
               <span>Tag name</span>
-              <input name="name" required defaultValue={editing === "new" ? "" : editing.name} />
+              <input
+                name="name"
+                required
+                defaultValue={editing === "new" ? "" : editing.name}
+                onChange={() => tagError && setTagError("")}
+              />
             </label>
             <label className="field">
               <span>Color</span>
@@ -2761,8 +2816,20 @@ function TagsPage() {
                 defaultValue={editing === "new" ? "#5068e9" : editing.color}
               />
             </label>
+            {tagError && (
+              <p className="form-error" role="alert" style={{ gridColumn: "1 / -1" }}>
+                {tagError}
+              </p>
+            )}
             <footer className="modal-actions">
-              <Button type="button" variant="ghost" onClick={() => setEditing(null)}>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setTagError("");
+                  setEditing(null);
+                }}
+              >
                 Cancel
               </Button>
               <Button type="submit">Save tag</Button>

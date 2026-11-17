@@ -70,6 +70,9 @@ CREATE TABLE IF NOT EXISTS public.tags (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS tags_workspace_name_unique_idx
+    ON public.tags (workspace_id, LOWER(BTRIM(name)));
+
 CREATE TABLE IF NOT EXISTS public.time_entries (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,

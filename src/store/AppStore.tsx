@@ -602,24 +602,43 @@ export function AppStoreProvider({
       };
     });
 
-  const saveTag = (tag: Tag) =>
+  const saveTag = (tag: Tag) => {
+    const cleanName = tag.name.trim();
+    if (!cleanName) {
+      setDataError("Tag name cannot be empty.");
+      return;
+    }
+    const duplicate = data.tags.some(
+      (candidate) =>
+        candidate.workspaceId === data.activeWorkspaceId &&
+        candidate.id !== tag.id &&
+        candidate.name.trim().toLowerCase() === cleanName.toLowerCase(),
+    );
+    if (duplicate) {
+      setDataError(`A tag named "${cleanName}" already exists in this workspace.`);
+      return;
+    }
+    const normalizedTag = { ...tag, name: cleanName };
     setData((current) => {
-      const exists = current.tags.some((candidate) => candidate.id === tag.id);
+      const exists = current.tags.some((candidate) => candidate.id === normalizedTag.id);
       const event = auditEvent(
         exists ? "Updated tag" : "Created tag",
-        tag.name,
-        `Color ${tag.color}`,
+        normalizedTag.name,
+        `Color ${normalizedTag.color}`,
       );
-      reportSyncError("save tag to Supabase", syncTagToSupabase(tag));
+      reportSyncError("save tag to Supabase", syncTagToSupabase(normalizedTag));
       reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
       return {
         ...current,
         tags: exists
-          ? current.tags.map((candidate) => (candidate.id === tag.id ? tag : candidate))
-          : [...current.tags, tag],
+          ? current.tags.map((candidate) =>
+              candidate.id === normalizedTag.id ? normalizedTag : candidate,
+            )
+          : [...current.tags, normalizedTag],
         audit: [event, ...current.audit],
       };
     });
+  };
 
   const deleteTag = (id: string) =>
     setData((current) => {

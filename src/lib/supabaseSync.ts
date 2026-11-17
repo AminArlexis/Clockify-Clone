@@ -269,10 +269,10 @@ export async function inviteWorkspaceMemberInSupabase(
   if (error) throw error;
 }
 
-export async function syncEntryToSupabase(entry: TimeEntry) {
+export async function syncEntryToSupabase(entry: TimeEntry, isUpdate = false) {
   const client = supabase;
   if (!client) throw new Error("Supabase is not configured.");
-  const { error } = await client.from("time_entries").upsert({
+  const payload = {
     id: entry.id,
     workspace_id: entry.workspaceId,
     user_id: entry.userId,
@@ -285,7 +285,10 @@ export async function syncEntryToSupabase(entry: TimeEntry) {
     source: entry.source,
     segments: entry.segments,
     notes: entry.notes || null,
-  });
+  };
+  const { error } = isUpdate
+    ? await client.from("time_entries").update(payload).eq("id", entry.id)
+    : await client.from("time_entries").insert(payload);
   if (error) throw error;
 }
 

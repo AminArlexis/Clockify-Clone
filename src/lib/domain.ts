@@ -30,6 +30,100 @@ export const restMinutes = (entry: Pick<TimeEntry, "segments">, now = Date.now()
     .filter((segment) => segment.type === "break")
     .reduce((sum, segment) => sum + minutesBetween(segment.start, segment.end, now), 0);
 
+const safeZone = (timezone?: string) => {
+  if (!timezone) return undefined;
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: timezone });
+    return timezone;
+  } catch {
+    return undefined;
+  }
+};
+
+const dayBoundsMs = (dayKey: string, timezone?: string): [number, number] => {
+  const [y, m, d] = dayKey.split("-").map(Number);
+  const tz = safeZone(timezone);
+  if (!tz) {
+    const start = new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+    const end = new Date(y, m - 1, d + 1, 0, 0, 0, 0).getTime();
+    return [start, end];
+  }
+  const toUtcAtZonedMidnight = (year: number, month: number, day: number) => {
+    const utcGuess = Date.UTC(year, month - 1, day, 0, 0, 0);
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date(utcGuess));
+    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value || 0);
+    const zonedAsUtc = Date.UTC(
+      get("year"),
+      get("month") - 1,
+      get("day"),
+      get("hour") === 24 ? 0 : get("hour"),
+      get("minute"),
+      get("second"),
+    );
+    return utcGuess - (zonedAsUtc - utcGuess);
+  };
+  return [toUtcAtZonedMidnight(y, m, d), toUtcAtZonedMidnight(y, m, d + 1)];
+};
+
+export function workMinutesForDay(
+  entry: Pick<TimeEntry, "start" | "end" | "segments">,
+  dayKey: string,
+  timezone?: string,
+  now = Date.now(),
+) {
+  const [dayStart, dayEnd] = dayBoundsMs(dayKey, timezone);
+  const segments = entry.segments.length
+    ? entry.segments.filter((segment) => segment.type === "work")
+    : [{ id: "fallback", type: "work" as const, start: entry.start, end: entry.end }];
+  const totalMs = segments.reduce((sum, segment) => {
+    const segStart = new Date(segment.start).getTime();
+    const segEnd = segment.end ? new Date(segment.end).getTime() : now;
+    const overlapStart = Math.max(segStart, dayStart);
+    const overlapEnd = Math.min(segEnd, dayEnd);
+    return overlapEnd > overlapStart ? sum + (overlapEnd - overlapStart) : sum;
+  }, 0);
+  return Math.max(0, Math.round(totalMs / 60000));
+}
+
+export function entryTouchesDay(
+  entry: Pick<TimeEntry, "start" | "end" | "segments">,
+  dayKey: string,
+  timezone?: string,
+  now = Date.now(),
+) {
+  const [dayStart, dayEnd] = dayBoundsMs(dayKey, timezone);
+  const startMs = new Date(entry.start).getTime();
+  const endMs = entry.end ? new Date(entry.end).getTime() : now;
+  if (endMs <= startMs) {
+    return startMs >= dayStart && startMs < dayEnd;
+  }
+  return workMinutesForDay(entry, dayKey, timezone, now) > 0;
+}
+
+export function dayIntervalForEntry(
+  entry: Pick<TimeEntry, "start" | "end">,
+  dayKey: string,
+  timezone?: string,
+  now = Date.now(),
+) {
+  const [dayStart, dayEnd] = dayBoundsMs(dayKey, timezone);
+  const startMs = Math.max(new Date(entry.start).getTime(), dayStart);
+  const endMs = Math.min(entry.end ? new Date(entry.end).getTime() : now, dayEnd);
+  return {
+    start: new Date(startMs).toISOString(),
+    end: new Date(Math.max(startMs, endMs)).toISOString(),
+  };
+}
+
 export function closeOpenSegment(segments: Segment[], at: string) {
   return segments.map((segment, index) =>
     index === segments.length - 1 && !segment.end ? { ...segment, end: at } : segment,

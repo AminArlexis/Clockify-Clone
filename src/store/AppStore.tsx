@@ -398,23 +398,25 @@ export function AppStoreProvider({
     setTimerBusy(true);
     setTimerError("");
     lastTimerAction.current = action;
-    setData((current) => {
-      const timer = current.activeTimer;
-      if (!timer) {
-        setTimerError("The active timer could not be found. Retry after refreshing the page.");
-        return current;
-      }
-      try {
-        if (action === "pause") {
-          const paused = pauseActiveTimer(timer);
-          reportSyncError("save timer to Supabase", syncActiveTimerToSupabase(paused));
-          return { ...current, activeTimer: paused };
-        }
-        if (action === "resume") {
-          const resumed = resumeActiveTimer(timer);
-          reportSyncError("save timer to Supabase", syncActiveTimerToSupabase(resumed));
-          return { ...current, activeTimer: resumed };
-        }
+    const timer = data.activeTimer;
+    if (!timer) {
+      setTimerError("The active timer could not be found. Retry after refreshing the page.");
+      queueMicrotask(() => {
+        timerLock.current = false;
+        setTimerBusy(false);
+      });
+      return;
+    }
+    try {
+      if (action === "pause") {
+        const paused = pauseActiveTimer(timer);
+        reportSyncError("save timer to Supabase", syncActiveTimerToSupabase(paused));
+        setData((current) => ({ ...current, activeTimer: paused }));
+      } else if (action === "resume") {
+        const resumed = resumeActiveTimer(timer);
+        reportSyncError("save timer to Supabase", syncActiveTimerToSupabase(resumed));
+        setData((current) => ({ ...current, activeTimer: resumed }));
+      } else {
         const entry = completeActiveTimer(timer);
         const event = {
           ...auditEvent("Stopped timer", entry.description, "Saved timer entry"),
@@ -424,19 +426,22 @@ export function AppStoreProvider({
           "remove timer from Supabase",
           syncActiveTimerToSupabase(undefined, timer.userId),
         );
-        reportSyncError("save time entry to Supabase", syncEntryToSupabase(entry));
+        reportSyncError("save time entry to Supabase", syncEntryToSupabase(entry, false));
         reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
-        return {
+        setData((current) => ({
           ...current,
           activeTimer: undefined,
-          entries: [entry, ...current.entries],
-          audit: [event, ...current.audit],
-        };
-      } catch (error) {
-        setTimerError(error instanceof Error ? error.message : "The timer action failed.");
-        return current;
+          entries: current.entries.some((candidate) => candidate.id === entry.id)
+            ? current.entries
+            : [entry, ...current.entries],
+          audit: current.audit.some((candidate) => candidate.id === event.id)
+            ? current.audit
+            : [event, ...current.audit],
+        }));
       }
-    });
+    } catch (error) {
+      setTimerError(error instanceof Error ? error.message : "The timer action failed.");
+    }
     queueMicrotask(() => {
       timerLock.current = false;
       setTimerBusy(false);
@@ -447,160 +452,183 @@ export function AppStoreProvider({
   const resumeTimer = () => runTimerAction("resume");
   const stopTimer = () => runTimerAction("stop");
 
-  const saveEntry = (input: EntryInput, correctionReason?: string) =>
-    setData((current) => {
-      const existing = input.id
-        ? current.entries.find((entry) => entry.id === input.id)
-        : undefined;
-      if (existing && existing.workspaceId !== current.activeWorkspaceId) return current;
-      const project = current.projects.find(
-        (candidate) =>
-          candidate.id === input.projectId && candidate.workspaceId === current.activeWorkspaceId,
-      );
-      const task = current.tasks.find(
-        (candidate) =>
-          candidate.id === input.taskId &&
-          candidate.workspaceId === current.activeWorkspaceId &&
-          candidate.projectId === project?.id,
-      );
-      const validTagIds = input.tagIds.filter((tagId) =>
-        current.tags.some(
-          (tag) => tag.id === tagId && tag.workspaceId === current.activeWorkspaceId,
-        ),
-      );
-      const entry: TimeEntry = {
-        ...input,
-        id: input.id || uid("entry"),
-        workspaceId: input.workspaceId || current.activeWorkspaceId,
-        projectId: project?.id,
-        taskId: task?.id,
-        tagIds: validTagIds,
-        source: input.source || "manual",
-        segments: input.segments || [
-          { id: uid("segment"), type: "work", start: input.start, end: input.end },
-        ],
-      };
-      const entries = existing
+  const saveEntry = (input: EntryInput, correctionReason?: string) => {
+    const cleanDescription = input.description.trim();
+    const startMs = new Date(input.start).getTime();
+    const endMs = new Date(input.end).getTime();
+    if (!cleanDescription || Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) {
+      setDataError("Enter a valid description, start time, and end time.");
+      return;
+    }
+    const existing = input.id
+      ? data.entries.find((entry) => entry.id === input.id)
+      : undefined;
+    if (existing && existing.workspaceId !== data.activeWorkspaceId) return;
+    if (existing && existing.userId !== sessionId && !correctionReason?.trim()) {
+      setDataError("A correction reason is required when editing a team member's entry.");
+      return;
+    }
+    const project = data.projects.find(
+      (candidate) =>
+        candidate.id === input.projectId && candidate.workspaceId === data.activeWorkspaceId,
+    );
+    const task = data.tasks.find(
+      (candidate) =>
+        candidate.id === input.taskId &&
+        candidate.workspaceId === data.activeWorkspaceId &&
+        candidate.projectId === project?.id,
+    );
+    const validTagIds = input.tagIds.filter((tagId) =>
+      data.tags.some(
+        (tag) => tag.id === tagId && tag.workspaceId === data.activeWorkspaceId,
+      ),
+    );
+    const entry: TimeEntry = {
+      ...input,
+      description: cleanDescription,
+      id: input.id || uid("entry"),
+      workspaceId: input.workspaceId || data.activeWorkspaceId,
+      projectId: project?.id,
+      taskId: task?.id,
+      tagIds: validTagIds,
+      source: input.source || "manual",
+      segments: input.segments || [
+        { id: uid("segment"), type: "work", start: input.start, end: input.end },
+      ],
+    };
+    const event: AuditEvent = {
+      id: uid("audit"),
+      workspaceId: data.activeWorkspaceId,
+      actorId: sessionId,
+      action:
+        existing && existing.userId !== sessionId
+          ? "Admin corrected time entry"
+          : existing
+            ? "Updated time entry"
+            : "Created time entry",
+      target: entry.description,
+      detail: existing ? "Entry values changed" : "Manual entry added",
+      reason: correctionReason,
+      previousValue: existing ? JSON.stringify(existing) : undefined,
+      updatedValue: existing ? JSON.stringify(entry) : undefined,
+      createdAt: new Date().toISOString(),
+    };
+    reportSyncError(
+      "save time entry to Supabase",
+      syncEntryToSupabase(entry, Boolean(existing)),
+    );
+    reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
+    setData((current) => ({
+      ...current,
+      entries: current.entries.some((candidate) => candidate.id === entry.id)
         ? current.entries.map((candidate) => (candidate.id === entry.id ? entry : candidate))
-        : [entry, ...current.entries];
-      const event: AuditEvent = {
-        id: uid("audit"),
-        workspaceId: current.activeWorkspaceId,
-        actorId: sessionId,
-        action:
-          existing && existing.userId !== sessionId
-            ? "Admin corrected time entry"
-            : existing
-              ? "Updated time entry"
-              : "Created time entry",
-        target: entry.description,
-        detail: existing ? "Entry values changed" : "Manual entry added",
-        reason: correctionReason,
-        previousValue: existing ? JSON.stringify(existing) : undefined,
-        updatedValue: existing ? JSON.stringify(entry) : undefined,
-        createdAt: new Date().toISOString(),
-      };
-      reportSyncError("save time entry to Supabase", syncEntryToSupabase(entry as TimeEntry));
-      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
-      return { ...current, entries, audit: [event, ...current.audit] };
-    });
+        : [entry, ...current.entries],
+      audit: current.audit.some((candidate) => candidate.id === event.id)
+        ? current.audit
+        : [event, ...current.audit],
+    }));
+  };
 
-  const deleteEntry = (id: string) =>
-    setData((current) => {
-      const target = current.entries.find((entry) => entry.id === id);
-      const event: AuditEvent = {
-        id: uid("audit"),
-        workspaceId: current.activeWorkspaceId,
-        actorId: sessionId,
-        action: "Deleted time entry",
-        target: target?.description || "Time entry",
-        detail: "Entry removed from the workspace",
-        createdAt: new Date().toISOString(),
-      };
-      reportSyncError("delete time entry from Supabase", deleteEntryFromSupabase(id));
-      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
-      return {
-        ...current,
-        entries: current.entries.filter((entry) => entry.id !== id),
-        audit: [event, ...current.audit],
-      };
-    });
+  const deleteEntry = (id: string) => {
+    const target = data.entries.find((entry) => entry.id === id);
+    const event: AuditEvent = {
+      id: uid("audit"),
+      workspaceId: data.activeWorkspaceId,
+      actorId: sessionId,
+      action: "Deleted time entry",
+      target: target?.description || "Time entry",
+      detail: "Entry removed from the workspace",
+      createdAt: new Date().toISOString(),
+    };
+    reportSyncError("delete time entry from Supabase", deleteEntryFromSupabase(id));
+    reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
+    setData((current) => ({
+      ...current,
+      entries: current.entries.filter((entry) => entry.id !== id),
+      audit: current.audit.some((candidate) => candidate.id === event.id)
+        ? current.audit
+        : [event, ...current.audit],
+    }));
+  };
 
-  const saveProject: AppStoreValue["saveProject"] = (project) =>
-    setData((current) => {
-      const exists = current.projects.some((candidate) => candidate.id === project.id);
-      const next = {
-        ...project,
-        workspaceId: project.workspaceId || current.activeWorkspaceId,
-        createdAt: project.createdAt || new Date().toISOString(),
-      };
-      const event = auditEvent(
-        exists ? "Updated project" : "Created project",
-        next.name,
-        next.description,
+  const saveProject: AppStoreValue["saveProject"] = (project) => {
+    const exists = data.projects.some((candidate) => candidate.id === project.id);
+    const next: Project = {
+      ...project,
+      workspaceId: project.workspaceId || data.activeWorkspaceId,
+      createdAt: project.createdAt || new Date().toISOString(),
+    };
+    const event = auditEvent(
+      exists ? "Updated project" : "Created project",
+      next.name,
+      next.description,
+    );
+    reportSyncError("save project to Supabase", syncProjectToSupabase(next));
+    reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
+    setData((current) => ({
+      ...current,
+      projects: current.projects.some((candidate) => candidate.id === next.id)
+        ? current.projects.map((candidate) => (candidate.id === next.id ? next : candidate))
+        : [next, ...current.projects],
+      audit: current.audit.some((candidate) => candidate.id === event.id)
+        ? current.audit
+        : [event, ...current.audit],
+    }));
+  };
+
+  const archiveProject = (id: string) => {
+    const project = data.projects.find((candidate) => candidate.id === id);
+    const nextStatus = project?.status === "active" ? "archived" : "active";
+    if (project) {
+      reportSyncError(
+        "update project in Supabase",
+        syncProjectToSupabase({ ...project, status: nextStatus }),
       );
-      reportSyncError("save project to Supabase", syncProjectToSupabase(next as Project));
-      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
-      return {
-        ...current,
-        projects: exists
-          ? current.projects.map((candidate) => (candidate.id === project.id ? next : candidate))
-          : [next, ...current.projects],
-        audit: [event, ...current.audit],
-      };
-    });
+    }
+    const event = auditEvent(
+      nextStatus === "archived" ? "Archived project" : "Restored project",
+      project?.name || "Project",
+      `Status changed to ${nextStatus}`,
+    );
+    reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
+    setData((current) => ({
+      ...current,
+      projects: current.projects.map((candidate) =>
+        candidate.id === id ? { ...candidate, status: nextStatus } : candidate,
+      ),
+      audit: current.audit.some((candidate) => candidate.id === event.id)
+        ? current.audit
+        : [event, ...current.audit],
+    }));
+  };
 
-  const archiveProject = (id: string) =>
-    setData((current) => {
-      const project = current.projects.find((candidate) => candidate.id === id);
-      const nextStatus = project?.status === "active" ? "archived" : "active";
-      if (project) {
-        reportSyncError(
-          "update project in Supabase",
-          syncProjectToSupabase({ ...project, status: nextStatus }),
-        );
-      }
-      const event = auditEvent(
-        nextStatus === "archived" ? "Archived project" : "Restored project",
-        project?.name || "Project",
-        `Status changed to ${nextStatus}`,
-      );
-      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
-      return {
-        ...current,
-        projects: current.projects.map((candidate) =>
-          candidate.id === id ? { ...candidate, status: nextStatus } : candidate,
-        ),
-        audit: [event, ...current.audit],
-      };
-    });
-
-  const saveTask = (task: Task) =>
-    setData((current) => {
-      if (
-        task.workspaceId !== current.activeWorkspaceId ||
-        !current.projects.some(
-          (project) =>
-            project.id === task.projectId && project.workspaceId === current.activeWorkspaceId,
-        )
+  const saveTask = (task: Task) => {
+    if (
+      task.workspaceId !== data.activeWorkspaceId ||
+      !data.projects.some(
+        (project) =>
+          project.id === task.projectId && project.workspaceId === data.activeWorkspaceId,
       )
-        return current;
-      const exists = current.tasks.some((candidate) => candidate.id === task.id);
-      const event = auditEvent(
-        exists ? "Updated task" : "Created task",
-        task.name,
-        task.completed ? "Marked complete" : "Task saved",
-      );
-      reportSyncError("save task to Supabase", syncTaskToSupabase(task));
-      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
-      return {
-        ...current,
-        tasks: exists
-          ? current.tasks.map((candidate) => (candidate.id === task.id ? task : candidate))
-          : [...current.tasks, task],
-        audit: [event, ...current.audit],
-      };
-    });
+    )
+      return;
+    const exists = data.tasks.some((candidate) => candidate.id === task.id);
+    const event = auditEvent(
+      exists ? "Updated task" : "Created task",
+      task.name,
+      task.completed ? "Marked complete" : "Task saved",
+    );
+    reportSyncError("save task to Supabase", syncTaskToSupabase(task));
+    reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
+    setData((current) => ({
+      ...current,
+      tasks: current.tasks.some((candidate) => candidate.id === task.id)
+        ? current.tasks.map((candidate) => (candidate.id === task.id ? task : candidate))
+        : [...current.tasks, task],
+      audit: current.audit.some((candidate) => candidate.id === event.id)
+        ? current.audit
+        : [event, ...current.audit],
+    }));
+  };
 
   const saveTag = (tag: Tag) => {
     const cleanName = tag.name.trim();
@@ -619,47 +647,48 @@ export function AppStoreProvider({
       return;
     }
     const normalizedTag = { ...tag, name: cleanName };
-    setData((current) => {
-      const exists = current.tags.some((candidate) => candidate.id === normalizedTag.id);
-      const event = auditEvent(
-        exists ? "Updated tag" : "Created tag",
-        normalizedTag.name,
-        `Color ${normalizedTag.color}`,
-      );
-      reportSyncError("save tag to Supabase", syncTagToSupabase(normalizedTag));
-      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
-      return {
-        ...current,
-        tags: exists
-          ? current.tags.map((candidate) =>
-              candidate.id === normalizedTag.id ? normalizedTag : candidate,
-            )
-          : [...current.tags, normalizedTag],
-        audit: [event, ...current.audit],
-      };
-    });
+    const exists = data.tags.some((candidate) => candidate.id === normalizedTag.id);
+    const event = auditEvent(
+      exists ? "Updated tag" : "Created tag",
+      normalizedTag.name,
+      `Color ${normalizedTag.color}`,
+    );
+    reportSyncError("save tag to Supabase", syncTagToSupabase(normalizedTag));
+    reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
+    setData((current) => ({
+      ...current,
+      tags: current.tags.some((candidate) => candidate.id === normalizedTag.id)
+        ? current.tags.map((candidate) =>
+            candidate.id === normalizedTag.id ? normalizedTag : candidate,
+          )
+        : [...current.tags, normalizedTag],
+      audit: current.audit.some((candidate) => candidate.id === event.id)
+        ? current.audit
+        : [event, ...current.audit],
+    }));
   };
 
-  const deleteTag = (id: string) =>
-    setData((current) => {
-      const tag = current.tags.find((candidate) => candidate.id === id);
-      const event = auditEvent(
-        "Deleted tag",
-        tag?.name || "Tag",
-        "Removed tag from all time entries",
-      );
-      reportSyncError("delete tag from Supabase", deleteTagFromSupabase(id));
-      reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
-      return {
-        ...current,
-        tags: current.tags.filter((candidate) => candidate.id !== id),
-        entries: current.entries.map((entry) => ({
-          ...entry,
-          tagIds: entry.tagIds.filter((tagId) => tagId !== id),
-        })),
-        audit: [event, ...current.audit],
-      };
-    });
+  const deleteTag = (id: string) => {
+    const tag = data.tags.find((candidate) => candidate.id === id);
+    const event = auditEvent(
+      "Deleted tag",
+      tag?.name || "Tag",
+      "Removed tag from all time entries",
+    );
+    reportSyncError("delete tag from Supabase", deleteTagFromSupabase(id));
+    reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
+    setData((current) => ({
+      ...current,
+      tags: current.tags.filter((candidate) => candidate.id !== id),
+      entries: current.entries.map((entry) => ({
+        ...entry,
+        tagIds: entry.tagIds.filter((tagId) => tagId !== id),
+      })),
+      audit: current.audit.some((candidate) => candidate.id === event.id)
+        ? current.audit
+        : [event, ...current.audit],
+    }));
+  };
 
   const saveUser = (user: User) =>
     setData((current) => {

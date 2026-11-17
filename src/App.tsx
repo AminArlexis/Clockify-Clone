@@ -50,7 +50,14 @@ import {
   YAxis,
 } from "recharts";
 import { AppStoreProvider, useAppStore } from "./store/AppStore";
-import { entriesToCsv, filterEntries, type EntryFilters } from "./lib/domain";
+import {
+  dayIntervalForEntry,
+  entriesToCsv,
+  entryTouchesDay,
+  filterEntries,
+  workMinutesForDay,
+  type EntryFilters,
+} from "./lib/domain";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
 import {
   claimWorkspaceInvitesInSupabase,
@@ -1506,18 +1513,18 @@ function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
   const visible = data.entries.filter(
     (entry) => currentUser?.role === "admin" || entry.userId === currentUser?.id,
   );
-  const today = visible.filter((entry) => dateKey(entry.start, tz) === dateKey(new Date(), tz));
+  const todayKey = dateKey(new Date(), tz);
+  const today = visible.filter((entry) => entryTouchesDay(entry, todayKey, tz));
   const monday = startOfWeek().getTime();
   const week = visible.filter((entry) => new Date(entry.start).getTime() >= monday);
   const daily = Array.from({ length: 7 }, (_, index) => {
     const date = new Date(startOfWeek());
     date.setDate(date.getDate() + index);
+    const key = dateKey(date, tz);
     return {
       day: date.toLocaleDateString([], { weekday: "short" }),
       hours: +(
-        visible
-          .filter((e) => dateKey(e.start, tz) === dateKey(date, tz))
-          .reduce((sum, e) => sum + entryMinutes(e), 0) / 60
+        visible.reduce((sum, e) => sum + workMinutesForDay(e, key, tz), 0) / 60
       ).toFixed(1),
     };
   });
@@ -1935,6 +1942,13 @@ function EntryTable({
   const filtered = filterEntries(entries, filters);
   const filteredMinutes = filtered.reduce((sum, entry) => sum + entryMinutes(entry), 0);
   const paged = filtered.slice(page * rows, page * rows + rows);
+  const [pendingDelete, setPendingDelete] = useState<TimeEntry | null>(null);
+  const [deletedNotice, setDeletedNotice] = useState("");
+  useEffect(() => {
+    if (!deletedNotice) return;
+    const timer = window.setTimeout(() => setDeletedNotice(""), 3000);
+    return () => window.clearTimeout(timer);
+  }, [deletedNotice]);
   const updateFilter = (patch: Partial<EntryFilters>) => {
     setFilters((current) => ({ ...current, ...patch }));
     setPage(0);
@@ -2062,6 +2076,7 @@ function EntryTable({
             <thead>
               <tr>
                 <th>Description</th>
+                {currentUser?.role === "admin" && <th>Member</th>}
                 <th>Project</th>
                 <th>Date</th>
                 <th>Time</th>
@@ -2073,12 +2088,16 @@ function EntryTable({
             <tbody>
               {paged.map((entry) => {
                 const project = data.projects.find((p) => p.id === entry.projectId);
+                const member = data.users.find((u) => u.id === entry.userId);
                 return (
                   <tr key={entry.id}>
                     <td>
                       <strong>{entry.description}</strong>
                       <small>{entry.source}</small>
                     </td>
+                    {currentUser?.role === "admin" && (
+                      <td>{member?.name || "Unknown"}</td>
+                    )}
                     <td>
                       {project ? (
                         <span className="project-label">
@@ -2106,10 +2125,9 @@ function EntryTable({
                           <Pencil size={15} />
                         </button>
                         <button
-                          onClick={() =>
-                            window.confirm("Delete this time entry?") && deleteEntry(entry.id)
-                          }
+                          onClick={() => setPendingDelete(entry)}
                           title="Delete"
+                          aria-label={`Delete ${entry.description}`}
                         >
                           <Trash2 size={15} />
                         </button>
@@ -2154,6 +2172,110 @@ function EntryTable({
           <ChevronRight size={16} />
         </button>
       </div>
+      {pendingDelete && (
+        <Modal
+          title="Delete time entry"
+          subtitle="This action removes the entry from your workspace and records an audit event."
+          onClose={() => setPendingDelete(null)}
+        >
+          <div className="modal-form">
+            <div
+              className="field-full"
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: "12px",
+                padding: "12px 14px",
+                borderRadius: "10px",
+                background: "#fef2f2",
+                border: "1px solid #fecaca",
+                color: "#7f1d1d",
+              }}
+            >
+              <Trash2 size={18} style={{ flexShrink: 0, marginTop: "2px", color: "#dc2626" }} />
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px" }}>
+                <strong style={{ fontSize: "13px", color: "#991b1b" }}>
+                  {pendingDelete.description || "Untitled activity"}
+                </strong>
+                <span style={{ color: "#7f1d1d" }}>
+                  {fmtDate(pendingDelete.start, tz)} · {fmtClock(pendingDelete.start, tz, tf)}–
+                  {fmtClock(pendingDelete.end, tz, tf)} ({fmtDuration(entryMinutes(pendingDelete))})
+                </span>
+              </div>
+            </div>
+            <footer className="modal-actions">
+              <Button type="button" variant="ghost" onClick={() => setPendingDelete(null)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="danger"
+                onClick={() => {
+                  const label = pendingDelete.description || "Time entry";
+                  deleteEntry(pendingDelete.id);
+                  setPendingDelete(null);
+                  setDeletedNotice(`"${label}" deleted successfully.`);
+                }}
+              >
+                Delete entry
+              </Button>
+            </footer>
+          </div>
+        </Modal>
+      )}
+      {deletedNotice && (
+        <div
+          role="status"
+          style={{
+            position: "fixed",
+            right: "24px",
+            bottom: "24px",
+            zIndex: 120,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            padding: "12px 16px",
+            borderRadius: "10px",
+            background: "#0f172a",
+            color: "#ffffff",
+            boxShadow: "0 12px 32px rgb(15 23 42 / 24%)",
+            fontSize: "13px",
+            fontWeight: 500,
+          }}
+        >
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: "22px",
+              height: "22px",
+              borderRadius: "999px",
+              background: "#16a34a",
+              color: "#ffffff",
+              flexShrink: 0,
+            }}
+          >
+            <Check size={14} />
+          </span>
+          <span>{deletedNotice}</span>
+          <button
+            type="button"
+            onClick={() => setDeletedNotice("")}
+            aria-label="Dismiss notification"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "#94a3b8",
+              cursor: "pointer",
+              display: "inline-flex",
+              padding: "2px",
+            }}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -2195,6 +2317,7 @@ function EntryModal({
   const [overlap, setOverlap] = useState<TimeEntry | null>(null);
   const [pending, setPending] = useState<EntryInput | null>(null);
   const [correctionReason, setCorrectionReason] = useState(initialDraft.correctionReason);
+  const [entryError, setEntryError] = useState("");
   const isAdminCorrection =
     Boolean(entry) && currentUser?.role === "admin" && entry?.userId !== currentUser.id;
   useEffect(() => {
@@ -2215,19 +2338,44 @@ function EntryModal({
     onClose();
   };
   const persist = (value: EntryInput) => {
-    saveEntry(value, isAdminCorrection ? correctionReason : undefined);
+    saveEntry(value, isAdminCorrection ? correctionReason.trim() : undefined);
     clearDraft(draftKey);
     onClose();
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setEntryError("");
+    if (!description.trim()) {
+      setEntryError("Please enter a valid description.");
+      return;
+    }
+    if (!date || !startTime || !endTime) {
+      setEntryError("Date, start time, and end time are required.");
+      return;
+    }
+    if (startTime === endTime) {
+      setEntryError("End time must be different from start time.");
+      return;
+    }
+    if (isAdminCorrection && !correctionReason.trim()) {
+      setEntryError("Please enter a correction reason.");
+      return;
+    }
     const start = zonedDateTimeToDate(date, startTime, tz);
     const end = zonedDateTimeToDate(date, endTime, tz);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      setEntryError("Invalid date or time value.");
+      return;
+    }
+    if (!entry && start.getTime() < Date.now() - 60000) {
+      setEntryError("Cannot add a time entry for a time that has already passed.");
+      return;
+    }
     if (end <= start) end.setDate(end.getDate() + 1);
     const value: EntryInput = {
       id: entry?.id,
       userId: entry?.userId || currentUser!.id,
-      description,
+      description: description.trim(),
       projectId: projectId || undefined,
       taskId: taskId || undefined,
       tagIds,
@@ -2387,6 +2535,11 @@ function EntryModal({
               placeholder="Explain why this team member’s entry is being changed"
             />
           </label>
+        )}
+        {entryError && (
+          <p className="form-error field-full" role="alert">
+            {entryError}
+          </p>
         )}
         <footer className="modal-actions">
           <Button type="button" variant="ghost" onClick={cancel}>
@@ -2899,14 +3052,15 @@ function CalendarPage() {
       </div>
       <section className={cn("calendar-grid", `calendar-${view}`)}>
         {days.map((day) => {
-          const entries = own.filter((entry) => dateKey(entry.start, tz) === dateKey(day, tz));
+          const dayStr = dateKey(day, tz);
+          const entries = own.filter((entry) => entryTouchesDay(entry, dayStr, tz));
           const outside = view === "month" && day.getMonth() !== cursor.getMonth();
           return (
             <div
               className={cn(
                 "calendar-day",
                 outside && "outside",
-                dateKey(day, tz) === dateKey(new Date(), tz) && "today",
+                dayStr === dateKey(new Date(), tz) && "today",
               )}
               key={day.toISOString()}
               onDoubleClick={() => {
@@ -2920,12 +3074,13 @@ function CalendarPage() {
                 </span>
                 <strong>{day.getDate()}</strong>
                 <small>
-                  {fmtDuration(entries.reduce((sum, entry) => sum + entryMinutes(entry), 0))}
+                  {fmtDuration(entries.reduce((sum, entry) => sum + workMinutesForDay(entry, dayStr, tz), 0))}
                 </small>
               </header>
               <div className="calendar-entries">
                 {entries.map((entry) => {
                   const project = data.projects.find((p) => p.id === entry.projectId);
+                  const interval = dayIntervalForEntry(entry, dayStr, tz);
                   return (
                     <button
                       key={entry.id}
@@ -2935,9 +3090,14 @@ function CalendarPage() {
                         setEntryModal(entry);
                       }}
                     >
-                      <span>{view !== "month" && fmtClock(entry.start, tz, tf)}</span>
+                      <span>
+                        {view !== "month" &&
+                          `${fmtClock(interval.start, tz, tf)}–${fmtClock(interval.end, tz, tf)}`}
+                      </span>
                       <strong>{entry.description}</strong>
-                      {view !== "month" && <small>{fmtDuration(entryMinutes(entry))}</small>}
+                      {view !== "month" && (
+                        <small>{fmtDuration(workMinutesForDay(entry, dayStr, tz))}</small>
+                      )}
                     </button>
                   );
                 })}
@@ -2972,52 +3132,70 @@ function TimesheetPage() {
   const { data, currentUser } = useAppStore();
   const tz = currentUser?.timezone;
   const tf = currentUser?.timeFormat;
-  const [week, setWeek] = useState(startOfWeek());
+  const [view, setView] = useState<"week" | "day">("week");
+  const [cursor, setCursor] = useState(() => new Date());
   const [editing, setEditing] = useState<TimeEntry | null>(null);
-  const days = Array.from({ length: 7 }, (_, index) => {
-    const d = new Date(week);
-    d.setDate(d.getDate() + index);
-    return d;
-  });
+  const weekStart = startOfWeek(cursor);
+  const days =
+    view === "day"
+      ? [cursor]
+      : Array.from({ length: 7 }, (_, index) => {
+          const d = new Date(weekStart);
+          d.setDate(d.getDate() + index);
+          return d;
+        });
   const own = data.entries.filter((entry) => entry.userId === currentUser?.id);
-  const total = own
-    .filter((entry) => days.some((day) => dateKey(day, tz) === dateKey(entry.start, tz)))
-    .reduce((sum, entry) => sum + entryMinutes(entry), 0);
+  const total = days.reduce((sum, day) => {
+    const dayStr = dateKey(day, tz);
+    return sum + own.reduce((daySum, entry) => daySum + workMinutesForDay(entry, dayStr, tz), 0);
+  }, 0);
+  const rangeLabel =
+    view === "day"
+      ? fmtDate(cursor, tz)
+      : `${days[0].toLocaleDateString([], { month: "short", day: "numeric" })} – ${days[6].toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}`;
+  const move = (step: number) => {
+    const d = new Date(cursor);
+    d.setDate(d.getDate() + step * (view === "day" ? 1 : 7));
+    setCursor(d);
+  };
   return (
     <div className="page-stack">
       <div className="timesheet-summary">
+        <div className="segmented" aria-label="Timesheet view">
+          {(["week", "day"] as const).map((item) => (
+            <button
+              key={item}
+              className={view === item ? "active" : ""}
+              onClick={() => setView(item)}
+            >
+              {item[0].toUpperCase() + item.slice(1)}
+            </button>
+          ))}
+        </div>
         <div className="date-nav">
-          <button
-            onClick={() => {
-              const d = new Date(week);
-              d.setDate(d.getDate() - 7);
-              setWeek(d);
-            }}
-          >
+          <button onClick={() => move(-1)} aria-label="Previous">
             <ChevronLeft size={18} />
           </button>
-          <button onClick={() => setWeek(startOfWeek())}>This week</button>
-          <button
-            onClick={() => {
-              const d = new Date(week);
-              d.setDate(d.getDate() + 7);
-              setWeek(d);
-            }}
-          >
+          <button onClick={() => setCursor(new Date())}>
+            {view === "day" ? "Today" : "This week"}
+          </button>
+          <button onClick={() => move(1)} aria-label="Next">
             <ChevronRight size={18} />
           </button>
+          <strong>{rangeLabel}</strong>
         </div>
         <div>
-          <span>Week total</span>
+          <span>{view === "day" ? "Day total" : "Week total"}</span>
           <strong>{fmtDuration(total)}</strong>
         </div>
       </div>
       <section className="timesheet-grid">
         {days.map((day) => {
-          const entries = own.filter((entry) => dateKey(entry.start, tz) === dateKey(day, tz));
+          const dayStr = dateKey(day, tz);
+          const entries = own.filter((entry) => entryTouchesDay(entry, dayStr, tz));
           return (
             <article
-              className={cn("timesheet-day", dateKey(day, tz) === dateKey(new Date(), tz) && "today")}
+              className={cn("timesheet-day", dayStr === dateKey(new Date(), tz) && "today")}
               key={day.toISOString()}
             >
               <header>
@@ -3025,10 +3203,16 @@ function TimesheetPage() {
                   <span>{day.toLocaleDateString([], { weekday: "long" })}</span>
                   <strong>{day.toLocaleDateString([], { month: "short", day: "numeric" })}</strong>
                 </div>
-                <b>{fmtDuration(entries.reduce((sum, entry) => sum + entryMinutes(entry), 0))}</b>
+                <b>
+                  {fmtDuration(
+                    entries.reduce((sum, entry) => sum + workMinutesForDay(entry, dayStr, tz), 0),
+                  )}
+                </b>
               </header>
               {entries.map((entry) => {
                 const project = data.projects.find((p) => p.id === entry.projectId);
+                const dayMins = workMinutesForDay(entry, dayStr, tz);
+                const interval = dayIntervalForEntry(entry, dayStr, tz);
                 return (
                   <button
                     className="timesheet-entry"
@@ -3039,11 +3223,11 @@ function TimesheetPage() {
                     <span>
                       <strong>{entry.description}</strong>
                       <small>
-                        {project?.name || "No project"} · {fmtClock(entry.start, tz, tf)}–
-                        {fmtClock(entry.end, tz, tf)}
+                        {project?.name || "No project"} · {fmtClock(interval.start, tz, tf)}–
+                        {fmtClock(interval.end, tz, tf)}
                       </small>
                     </span>
-                    <b>{fmtDuration(entryMinutes(entry))}</b>
+                    <b>{fmtDuration(dayMins)}</b>
                   </button>
                 );
               })}
@@ -3063,6 +3247,7 @@ function ReportsPage() {
   const [project, setProject] = useState("");
   const [member, setMember] = useState(currentUser?.role === "member" ? currentUser.id : "");
   const [tag, setTag] = useState("");
+  const [source, setSource] = useState<"" | "timer" | "manual">("");
   const [range, setRange] = useState("30");
   const [groupBy, setGroupBy] = useState<"project" | "tag">("project");
   const cutoff = new Date();
@@ -3073,6 +3258,7 @@ function ReportsPage() {
       (!project || entry.projectId === project) &&
       (!member || entry.userId === member) &&
       (!tag || entry.tagIds.includes(tag)) &&
+      (!source || entry.source === source) &&
       (currentUser?.role === "admin" || entry.userId === currentUser?.id),
   );
   const tz = currentUser?.timezone;
@@ -3082,6 +3268,7 @@ function ReportsPage() {
     Member: data.users.find((u) => u.id === entry.userId)?.name || "",
     Description: entry.description,
     Project: data.projects.find((p) => p.id === entry.projectId)?.name || "",
+    Source: entry.source,
     Start: fmtClock(entry.start, tz, tf),
     End: fmtClock(entry.end, tz, tf),
     "UTC Start": new Date(entry.start).toISOString(),
@@ -3180,6 +3367,15 @@ function ReportsPage() {
             </option>
           ))}
         </SelectField>
+        <SelectField
+          label="Source"
+          value={source}
+          onChange={(e) => setSource(e.target.value as "" | "timer" | "manual")}
+        >
+          <option value="">Any source</option>
+          <option value="timer">Timer</option>
+          <option value="manual">Manual</option>
+        </SelectField>
       </section>
       <div className="report-total">
         <div>
@@ -3276,12 +3472,11 @@ function WeeklyReport({ entries }: { entries: TimeEntry[] }) {
   const data = Array.from({ length: 7 }, (_, index) => {
     const d = new Date(week);
     d.setDate(d.getDate() + index);
+    const dayStr = dateKey(d, tz);
     return {
       day: d.toLocaleDateString([], { weekday: "short" }),
       hours: +(
-        entries
-          .filter((entry) => dateKey(entry.start, tz) === dateKey(d, tz))
-          .reduce((sum, entry) => sum + entryMinutes(entry), 0) / 60
+        entries.reduce((sum, entry) => sum + workMinutesForDay(entry, dayStr, tz), 0) / 60
       ).toFixed(1),
     };
   });
@@ -3317,9 +3512,12 @@ function downloadBlob(blob: Blob, name: string) {
 
 function TeamPage() {
   const { data, currentUser, saveUser, inviteMember, addAudit } = useAppStore();
+  const tz = currentUser?.timezone;
+  const tf = currentUser?.timeFormat;
   const [search, setSearch] = useState("");
   const [invite, setInvite] = useState(false);
   const [detail, setDetail] = useState<User | null>(null);
+  const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<User["role"]>("member");
   const [inviteError, setInviteError] = useState("");
@@ -3491,6 +3689,61 @@ function TeamPage() {
               <strong>{data.entries.filter((entry) => entry.userId === detail.id).length}</strong>
             </div>
           </div>
+          <div style={{ padding: "0 21px 16px" }}>
+            <strong style={{ display: "block", fontSize: "12px", color: "#475569", marginBottom: "8px" }}>
+              Member time entries
+            </strong>
+            {data.entries.filter((entry) => entry.userId === detail.id).length ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "220px", overflowY: "auto" }}>
+                {data.entries
+                  .filter((entry) => entry.userId === detail.id)
+                  .slice(0, 15)
+                  .map((entry) => {
+                    const project = data.projects.find((p) => p.id === entry.projectId);
+                    return (
+                      <div
+                        key={entry.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: "10px",
+                          padding: "8px 10px",
+                          borderRadius: "8px",
+                          border: "1px solid #e2e8f0",
+                          fontSize: "12px",
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <strong style={{ display: "block", color: "#0f172a" }}>
+                            {entry.description}
+                          </strong>
+                          <small style={{ color: "#64748b" }}>
+                            {project?.name || "No project"} · {fmtDate(entry.start, tz)} ·{" "}
+                            {fmtClock(entry.start, tz, tf)}–{fmtClock(entry.end, tz, tf)}
+                          </small>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                          <strong>{fmtDuration(entryMinutes(entry))}</strong>
+                          <button
+                            className="icon-button"
+                            title="Edit member entry"
+                            onClick={() => {
+                              setEditingEntry(entry);
+                              setDetail(null);
+                            }}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            ) : (
+              <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>No time entries yet.</p>
+            )}
+          </div>
           {detail.id !== currentUser?.id && (
             <footer className="modal-actions">
               <Button
@@ -3508,6 +3761,9 @@ function TeamPage() {
             </footer>
           )}
         </Modal>
+      )}
+      {editingEntry && (
+        <EntryModal entry={editingEntry} onClose={() => setEditingEntry(null)} />
       )}
     </div>
   );
@@ -3550,19 +3806,47 @@ function AuditPage() {
                     <b>Reason:</b> {event.reason}
                   </p>
                 )}
-                {(event.previousValue || event.updatedValue) && (
-                  <details className="audit-change">
-                    <summary>View recorded changes</summary>
-                    <div>
-                      <span>Previous</span>
-                      <code>{event.previousValue}</code>
-                    </div>
-                    <div>
-                      <span>Updated</span>
-                      <code>{event.updatedValue}</code>
-                    </div>
-                  </details>
-                )}
+                {(event.previousValue || event.updatedValue) && (() => {
+                  const formatSnapshot = (raw?: string) => {
+                    if (!raw) return null;
+                    try {
+                      const parsed = JSON.parse(raw) as Partial<TimeEntry>;
+                      if (parsed && typeof parsed.start === "string" && typeof parsed.end === "string") {
+                        const project = data.projects.find((p) => p.id === parsed.projectId);
+                        const mins = Array.isArray(parsed.segments)
+                          ? entryMinutes(parsed as TimeEntry)
+                          : minutesBetween(parsed.start, parsed.end);
+                        return (
+                          <div style={{ fontSize: "12px", color: "#334155", lineHeight: 1.5 }}>
+                            <div><strong>Description:</strong> {parsed.description || "Untitled"}</div>
+                            <div>
+                              <strong>Time:</strong> {fmtDate(parsed.start, tz)} ·{" "}
+                              {fmtClock(parsed.start, tz, tf)}–{fmtClock(parsed.end, tz, tf)} ({fmtDuration(mins)})
+                            </div>
+                            <div><strong>Project:</strong> {project?.name || "No project"}</div>
+                            {parsed.notes && <div><strong>Notes:</strong> {parsed.notes}</div>}
+                          </div>
+                        );
+                      }
+                    } catch {
+                      // fallback below
+                    }
+                    return <code>{raw}</code>;
+                  };
+                  return (
+                    <details className="audit-change">
+                      <summary>View recorded changes</summary>
+                      <div>
+                        <span>Previous</span>
+                        {formatSnapshot(event.previousValue)}
+                      </div>
+                      <div>
+                        <span>Updated</span>
+                        {formatSnapshot(event.updatedValue)}
+                      </div>
+                    </details>
+                  );
+                })()}
                 <span>
                   {user?.name || "Unknown"} · {event.target}
                 </span>

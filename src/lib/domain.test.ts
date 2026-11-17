@@ -6,11 +6,13 @@ import {
   completeActiveTimer,
   entriesOverlap,
   entriesToCsv,
+  entryTouchesDay,
   filterEntries,
   pauseActiveTimer,
   resumeActiveTimer,
   restMinutes,
   workMinutes,
+  workMinutesForDay,
 } from "./domain";
 
 const activeTimer = (): ActiveTimer => ({
@@ -49,6 +51,31 @@ describe("timer domain", () => {
     const entry = completeActiveTimer(activeTimer(), "2025-01-02T01:00:00.000Z");
     expect(workMinutes(entry)).toBe(90);
     expect(new Date(entry.start).getUTCDate()).not.toBe(new Date(entry.end).getUTCDate());
+  });
+
+  it("splits overnight entry hours across local days around midnight (9:00 PM to 2:00 AM)", () => {
+    const overnightEntry: TimeEntry = {
+      id: "overnight-1",
+      workspaceId: "w1",
+      userId: "u1",
+      description: "Night shift",
+      tagIds: [],
+      start: "2026-11-16T13:00:00.000Z", // 9:00 PM Asia/Manila (Mon Nov 16)
+      end: "2026-11-16T18:00:00.000Z",   // 2:00 AM Asia/Manila (Tue Nov 17)
+      source: "manual",
+      segments: [
+        {
+          id: "seg-1",
+          type: "work",
+          start: "2026-11-16T13:00:00.000Z",
+          end: "2026-11-16T18:00:00.000Z",
+        },
+      ],
+    };
+    expect(entryTouchesDay(overnightEntry, "2026-11-16", "Asia/Manila")).toBe(true);
+    expect(entryTouchesDay(overnightEntry, "2026-11-17", "Asia/Manila")).toBe(true);
+    expect(workMinutesForDay(overnightEntry, "2026-11-16", "Asia/Manila")).toBe(180); // 3h before midnight
+    expect(workMinutesForDay(overnightEntry, "2026-11-17", "Asia/Manila")).toBe(120); // 2h after midnight
   });
 });
 

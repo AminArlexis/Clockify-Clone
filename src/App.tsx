@@ -2406,7 +2406,8 @@ function EntryModal({
 }
 
 function ProjectsPage() {
-  const { data, saveProject, archiveProject, saveTask } = useAppStore();
+  const { data, currentUser, saveProject, archiveProject, saveTask } = useAppStore();
+const isAdmin = currentUser?.role === "admin";
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "active" | "archived">("all");
   const [editing, setEditing] = useState<Project | "new" | null>(null);
@@ -2417,9 +2418,10 @@ function ProjectsPage() {
       (filter === "all" || project.status === filter) &&
       `${project.name} ${project.client}`.toLowerCase().includes(search.toLowerCase()),
   );
-  const save = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
+const save = (event: FormEvent<HTMLFormElement>) => {
+  event.preventDefault();
+  if (!isAdmin) return;
+  const form = new FormData(event.currentTarget);
     const current = editing === "new" ? undefined : editing || undefined;
     saveProject({
       id: current?.id || id("project"),
@@ -2450,9 +2452,11 @@ function ProjectsPage() {
             <option value="archived">Archived</option>
           </select>
         </div>
-        <Button onClick={() => setEditing("new")}>
-          <Plus size={16} /> New project
-        </Button>
+{isAdmin && (
+  <Button onClick={() => setEditing("new")}>
+    <Plus size={16} /> New project
+  </Button>
+)}
       </div>
       <div className="project-grid">
         {visible.map((project) => {
@@ -2504,20 +2508,24 @@ function ProjectsPage() {
                       );
                     })}
                 </div>
-                <div className="row-actions">
-                  <button onClick={() => setTaskProject(project)} title="Add task">
-                    <Plus size={15} />
-                  </button>
-                  <button onClick={() => setEditing(project)} title="Edit">
-                    <Pencil size={15} />
-                  </button>
-                  <button
-                    onClick={() => archiveProject(project.id)}
-                    title={project.status === "active" ? "Archive" : "Restore"}
-                  >
-                    <Archive size={15} />
-                  </button>
-                </div>
+               <div className="row-actions">
+  <button onClick={() => setTaskProject(project)} title="Add task">
+    <Plus size={15} />
+  </button>
+  {isAdmin && (
+    <>
+      <button onClick={() => setEditing(project)} title="Edit">
+        <Pencil size={15} />
+      </button>
+      <button
+        onClick={() => archiveProject(project.id)}
+        title={project.status === "active" ? "Archive" : "Restore"}
+      >
+        <Archive size={15} />
+      </button>
+    </>
+  )}
+</div>
               </div>
             </article>
           );

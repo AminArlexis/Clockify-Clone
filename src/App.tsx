@@ -1267,8 +1267,8 @@ function AppShell() {
                 <item.icon size={18} />
                 {!collapsed && <span>{item.label}</span>}
                 {item.page === "tracker" && data.activeTimer && !collapsed && (
-                  <i className="live-dot" />
-                )}
+  <i className={cn("live-dot", data.activeTimer.status === "paused" && "live-dot-paused")} />
+)}
               </button>
             ))}
         </nav>

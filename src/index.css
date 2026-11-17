@@ -184,6 +184,11 @@
     box-shadow: 0 0 0 4px rgb(24 166 122 / 12%);
     animation: pulse 1.7s infinite;
   }
+  .live-dot.live-dot-paused {
+    background: #d97706;
+    box-shadow: 0 0 0 4px rgb(217 119 6 / 15%);
+    animation: none;
+  }
   @keyframes pulse {
     50% {
       box-shadow: 0 0 0 7px rgb(24 166 122 / 2%);

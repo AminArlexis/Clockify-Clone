@@ -5,11 +5,19 @@ import { fetchAppDataFromSupabase, syncActiveTimerToSupabase } from "../lib/supa
 import { createTestData } from "../test/fixtures";
 import { AppStoreProvider, useAppStore } from "./AppStore";
 
+const authMocks = vi.hoisted(() => ({
+  getSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }),
+  signInWithPassword: vi.fn(),
+  getAuthorizationDetails: vi.fn(),
+}));
+
 vi.mock("../lib/supabase", () => ({
   isSupabaseConfigured: true,
   supabase: {
     auth: {
-      getSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }),
+      getSession: authMocks.getSession,
+      signInWithPassword: authMocks.signInWithPassword,
+      oauth: { getAuthorizationDetails: authMocks.getAuthorizationDetails },
     },
   },
 }));
@@ -189,5 +197,59 @@ describe("role-based interface", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "Log in" })[0]);
     expect(screen.getByRole("heading", { name: "Sign in to TimeFlow" })).toBeInTheDocument();
+  });
+});
+
+describe("OAuth consent route", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    window.history.replaceState({}, "", "/oauth/consent?authorization_id=hermes-request");
+    authMocks.signInWithPassword.mockReset().mockResolvedValue({
+      data: { user: { id: "u1", user_metadata: { full_name: "Test Admin" } } },
+      error: null,
+    });
+    authMocks.getAuthorizationDetails.mockReset().mockResolvedValue({
+      data: {
+        authorization_id: "hermes-request",
+        client: { name: "Hermes Agent", uri: "", logo_uri: "" },
+        user: { id: "u1", email: "admin@example.test" },
+        scope: "openid profile",
+        redirect_uri: "https://hermes.example/callback",
+      },
+      error: null,
+    });
+    vi.mocked(fetchAppDataFromSupabase).mockResolvedValue(createTestData());
+  });
+
+  it("returns to the requested consent screen after login", async () => {
+    render(<App initialData={createTestData()} />);
+
+    fireEvent.change(screen.getByLabelText("Work email"), {
+      target: { value: "admin@example.test" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "password123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByText("Hermes Agent")).toBeInTheDocument();
+    expect(authMocks.getAuthorizationDetails).toHaveBeenCalledWith("hermes-request");
+  });
+
+  it("keeps ordinary login on the dashboard when no OAuth request is pending", async () => {
+    window.history.replaceState({}, "", "/login");
+    render(<App initialData={createTestData()} />);
+
+    fireEvent.change(screen.getByLabelText("Work email"), {
+      target: { value: "admin@example.test" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "password123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    expect(authMocks.getAuthorizationDetails).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,9 @@
+{
+  "imports": {
+    "@supabase/functions-js": "jsr:@supabase/functions-js@^2",
+    "@supabase/server": "npm:@supabase/server@^1",
+    "@supabase/middleware": "npm:@supabase/middleware@1",
+    "@modelcontextprotocol/server": "npm:@modelcontextprotocol/server@^2.0.0",
+    "zod": "npm:zod@^4.3.6"
+  }
+}

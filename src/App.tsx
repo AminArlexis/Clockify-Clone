@@ -59,6 +59,7 @@ import {
   type EntryFilters,
 } from "./lib/domain";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
+import OAuthConsentScreen from "./OAuthConsentScreen";
 import {
   claimWorkspaceInvitesInSupabase,
   fetchAppDataFromSupabase,
@@ -322,6 +323,38 @@ function SelectField({
 }
 
 type AuthMode = "login" | "register" | "forgot" | "reset" | "verify";
+const OAUTH_CONSENT_AUTHORIZATION_ID_KEY = "timeflow-oauth-consent-authorization-id";
+const AUTH_FLOW_PATHS = new Set([
+  "/oauth/consent",
+  "/login",
+  "/register",
+  "/verify",
+  "/forgot",
+  "/reset",
+]);
+
+function getPendingOAuthAuthorizationId() {
+  const routeAuthorizationId =
+    window.location.pathname === "/oauth/consent"
+      ? new URLSearchParams(window.location.search).get("authorization_id")
+      : null;
+  return (
+    routeAuthorizationId?.trim() ||
+    sessionStorage.getItem(OAUTH_CONSENT_AUTHORIZATION_ID_KEY)?.trim() ||
+    ""
+  );
+}
+
+function continueAfterAuthentication(navigate: (path: string) => void) {
+  const authorizationId = getPendingOAuthAuthorizationId();
+  if (!authorizationId) {
+    navigate("/dashboard");
+    return;
+  }
+  sessionStorage.setItem(OAUTH_CONSENT_AUTHORIZATION_ID_KEY, authorizationId);
+  const params = new URLSearchParams({ authorization_id: authorizationId });
+  navigate(`/oauth/consent?${params.toString()}`);
+}
 
 function PublicLanding({ navigate }: { navigate: (path: string) => void }) {
   const features = [
@@ -752,7 +785,7 @@ function AuthScreen({
               } else {
                 await register(userName, email, authData.user.id);
               }
-              navigate("/dashboard");
+              continueAfterAuthentication(navigate);
             }
             setLoading(false);
           })
@@ -949,7 +982,7 @@ function AuthScreen({
                       await register(pending.name, pending.email, userId);
                       setVerifiedUserId("");
                       setPending(null);
-                      navigate("/dashboard");
+                      continueAfterAuthentication(navigate);
                       setLoading(false);
                     } catch (err: unknown) {
                       setLoading(false);
@@ -4039,12 +4072,29 @@ function RecentEntries({ entries, title }: { entries: TimeEntry[]; title: string
 function Root() {
   const { currentUser, loading } = useAppStore();
   const [path, setPath] = useState(window.location.pathname);
+  const isOAuthConsentRoute = window.location.pathname === "/oauth/consent";
+  const authorizationId = isOAuthConsentRoute
+    ? new URLSearchParams(window.location.search).get("authorization_id")
+    : null;
+  const validatedAuthorizationId = authorizationId?.trim() || "";
   useEffect(() => {
     const update = () => setPath(window.location.pathname);
     window.addEventListener("popstate", update);
     return () => window.removeEventListener("popstate", update);
   }, []);
   const navigate = (next: string) => {
+    const nextPath = new URL(next, window.location.origin).pathname;
+    if (window.location.pathname === "/oauth/consent") {
+      const authorizationId = new URLSearchParams(window.location.search)
+        .get("authorization_id")
+        ?.trim();
+      if (authorizationId && AUTH_FLOW_PATHS.has(nextPath)) {
+        sessionStorage.setItem(OAUTH_CONSENT_AUTHORIZATION_ID_KEY, authorizationId);
+      }
+    }
+    if (!AUTH_FLOW_PATHS.has(nextPath)) {
+      sessionStorage.removeItem(OAUTH_CONSENT_AUTHORIZATION_ID_KEY);
+    }
     window.history.pushState({}, "", next);
     setPath(next);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -4066,6 +4116,40 @@ function Root() {
           <span>Restoring your workspace…</span>
         </div>
       </main>
+    );
+  }
+  if (isOAuthConsentRoute) {
+    if (currentUser) {
+      return validatedAuthorizationId ? (
+        <OAuthConsentScreen
+          key={validatedAuthorizationId}
+          authorizationId={validatedAuthorizationId}
+          onComplete={() => {
+            if (
+              sessionStorage.getItem(OAUTH_CONSENT_AUTHORIZATION_ID_KEY) ===
+              validatedAuthorizationId
+            ) {
+              sessionStorage.removeItem(OAUTH_CONSENT_AUTHORIZATION_ID_KEY);
+            }
+          }}
+        />
+      ) : (
+        <main>
+          <h1>Invalid OAuth request</h1>
+          <p>The authorization_id query parameter is missing.</p>
+        </main>
+      );
+    }
+    if (!validatedAuthorizationId) {
+      return (
+        <main>
+          <h1>Invalid OAuth request</h1>
+          <p>The authorization_id query parameter is missing.</p>
+        </main>
+      );
+    }
+    return (
+      <AuthScreen initialMode="login" navigate={navigate} />
     );
   }
   if (currentUser && path !== "/reset") return <AppShell />;

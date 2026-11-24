@@ -428,7 +428,7 @@ Deno.serve(
                 .from("active_timers")
                 .select("*")
                 .eq("user_id", userId)
-                .eq("status", "running")
+                .or("status.eq.running,status.eq.paused")
                 .maybeSingle();
 
             if (existingError) throw new Error(existingError.message);
@@ -481,7 +481,7 @@ Deno.serve(
                 .from("active_timers")
                 .select("*")
                 .eq("user_id", userId)
-                .eq("status", "running")
+                .or("status.eq.running,status.eq.paused")
                 .maybeSingle();
 
             if (timerError) throw new Error(timerError.message);
@@ -507,17 +507,13 @@ Deno.serve(
               start_time: timer.started_at,
               end_time: new Date().toISOString(),
               source: "timer",
-              duration_seconds: durationSeconds,
-              duration_minutes: durationMinutes,
-              duration_hours: durationHours,
-              duration_remaining_seconds: remainingSeconds,
               segments: [
                 {
                   id: uid("segment"),
                   type: "work",
                   start: timer.started_at,
                   end: new Date().toISOString(),
-                  duration_seconds,
+                  duration_seconds: durationSeconds,
                 },
               ],
             };
@@ -561,7 +557,7 @@ Deno.serve(
                 .from("active_timers")
                 .select("*")
                 .eq("user_id", userId)
-                .eq("status", "running")
+                .or("status.eq.running,status.eq.paused")
                 .maybeSingle();
 
             if (timerError) throw new Error(timerError.message);

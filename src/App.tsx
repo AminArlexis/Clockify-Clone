@@ -1536,7 +1536,11 @@ function runningSegmentDuration(
       0,
     );
 
-  if (activeTimer?.status !== "running") return endedMs;
+  const ticking =
+    (type === "work" && activeTimer?.status === "running") ||
+    (type === "break" && activeTimer?.status === "paused");
+
+  if (!activeTimer || !ticking) return endedMs;
 
   const openMs = segs
     .filter((segment) => segment.type === type && !segment.end)
@@ -1548,9 +1552,8 @@ function runningSegmentDuration(
 
   if (openMs > 0) return endedMs + openMs;
 
-  // No open segment (e.g. Supabase returned empty segments). Fall back to
-  // elapsed from startedAt so a running timer never renders 00:00:00.
-  if (activeTimer.startedAt) {
+  // Fallback para sa work lang kapag walang open segment
+  if (type === "work" && activeTimer.startedAt) {
     return endedMs + Math.max(0, now - new Date(activeTimer.startedAt).getTime());
   }
   return endedMs;

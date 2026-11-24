@@ -1570,9 +1570,11 @@ return endedMs;
 function TimerClock({ type = "work" }: { type?: Segment["type"] }) {
   const { data } = useAppStore();
   const [now, setNow] = useState(() => Date.now());
-const isTicking =
-  (type === "work" && data.activeTimer?.status === "running") ||
-  (type === "break" && data.activeTimer?.status === "paused");
+
+  // (2) palitan ito
+  const isTicking =
+    (type === "work" && data.activeTimer?.status === "running") ||
+    (type === "break" && data.activeTimer?.status === "paused");
 
   useEffect(() => {
     setNow(Date.now());
@@ -1580,6 +1582,9 @@ const isTicking =
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [isTicking, data.activeTimer?.id, data.activeTimer?.segments.length]);
+
+  // (1) idagdag ito, bago ang return
+  console.log("BUILD-CHECK v2", data.activeTimer?.status, data.activeTimer?.segments.length);
 
   return <strong>{formatSegmentDuration(data.activeTimer?.segments, type, now, data.activeTimer)}</strong>;
 }

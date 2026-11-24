@@ -428,6 +428,7 @@ Deno.serve(
                 .from("active_timers")
                 .select("*")
                 .eq("user_id", userId)
+                .eq("status", "running")
                 .maybeSingle();
 
             if (existingError) throw new Error(existingError.message);
@@ -467,7 +468,7 @@ Deno.serve(
         server.registerTool(
           "stop_timer",
           {
-            description: "Stop the active timer and create a time entry.",
+            description: "Stop the active timer and create a time entry. The timer duration is calculated from started_at to now.",
             inputSchema: z.object({
               workspace_id: z.string().optional().describe("Workspace ID (optional, will resolve active timer)."),
             }),
@@ -475,18 +476,24 @@ Deno.serve(
           },
           async ({ workspace_id }) => {
             const userId = await getAuthenticatedUserId(supabase);
-            
+
             const { data: timer, error: timerError } = await supabase
                 .from("active_timers")
                 .select("*")
                 .eq("user_id", userId)
+                .eq("status", "running")
                 .maybeSingle();
-            
-            if (timerError) throw new Error(timerError.message);
-            if (!timer) throw new Error("No active timer found.");
 
-            const startTime = timer.started_at;
-            const endTime = new Date().toISOString();
+            if (timerError) throw new Error(timerError.message);
+            if (!timer) throw new Error("No active running timer found. Start a timer first.");
+
+            const startTime = new Date(timer.started_at).getTime();
+            const endTime = Date.now();
+            const durationMs = Math.max(0, endTime - startTime);
+            const durationSeconds = Math.floor(durationMs / 1000);
+            const durationMinutes = Math.floor(durationSeconds / 60);
+            const durationHours = Math.floor(durationMinutes / 60);
+            const remainingSeconds = durationSeconds % 60;
 
             // Create entry
             const entry = {
@@ -497,15 +504,20 @@ Deno.serve(
               project_id: timer.project_id,
               task_id: timer.task_id,
               tag_ids: timer.tag_ids,
-              start_time: startTime,
-              end_time: endTime,
+              start_time: timer.started_at,
+              end_time: new Date().toISOString(),
               source: "timer",
+              duration_seconds: durationSeconds,
+              duration_minutes: durationMinutes,
+              duration_hours: durationHours,
+              duration_remaining_seconds: remainingSeconds,
               segments: [
                 {
                   id: uid("segment"),
                   type: "work",
-                  start: startTime,
-                  end: endTime,
+                  start: timer.started_at,
+                  end: new Date().toISOString(),
+                  duration_seconds,
                 },
               ],
             };
@@ -514,43 +526,67 @@ Deno.serve(
             if (entryError) throw new Error(entryError.message);
 
             // Delete timer
-            await supabase.from("active_timers").delete().eq("id", timer.id);
+            const { error: deleteError } = await supabase
+                .from("active_timers")
+                .delete()
+                .eq("id", timer.id);
 
-            return jsonContent({ status: "stopped", entry });
+            if (deleteError) throw new Error(deleteError.message);
+
+            return jsonContent({
+              status: "stopped",
+              timer: timer,
+              entry,
+              duration: {
+                hours: durationHours,
+                minutes: durationMinutes,
+                seconds: remainingSeconds,
+              },
+            });
           }
         );
 
         server.registerTool(
-            "pause_timer",
-            {
-                description: "Pause or resume the active timer.",
-                inputSchema: z.object({
-                    action: z.enum(["pause", "resume"]).describe("Action to perform."),
-                }),
-                annotations: { readOnlyHint: false, destructiveHint: false },
-            },
-            async ({ action }) => {
-                const userId = await getAuthenticatedUserId(supabase);
-                const { data: timer, error: timerError } = await supabase
-                    .from("active_timers")
-                    .select("*")
-                    .eq("user_id", userId)
-                    .maybeSingle();
+          "pause_timer",
+          {
+            description: "Pause or resume the active timer. Use action='pause' to pause, action='resume' to resume.",
+            inputSchema: z.object({
+              action: z.enum(["pause", "resume"]).describe("Action to perform."),
+            }),
+            annotations: { readOnlyHint: false, destructiveHint: false },
+          },
+          async ({ action }) => {
+            const userId = await getAuthenticatedUserId(supabase);
+            const { data: timer, error: timerError } = await supabase
+                .from("active_timers")
+                .select("*")
+                .eq("user_id", userId)
+                .eq("status", "running")
+                .maybeSingle();
 
-                if (timerError) throw new Error(timerError.message);
-                if (!timer) throw new Error("No active timer found.");
+            if (timerError) throw new Error(timerError.message);
+            if (!timer) throw new Error("No active running timer found. Start one first.");
 
-                const newStatus = action === "pause" ? "paused" : "running";
-                
-                const { error: updateError } = await supabase
-                    .from("active_timers")
-                    .update({ status: newStatus, updated_at: new Date().toISOString() })
-                    .eq("id", timer.id);
-                
-                if (updateError) throw new Error(updateError.message);
-
-                return jsonContent({ status: newStatus });
+            const newStatus = action === "pause" ? "paused" : "running";
+            const updateFields: Record<string, unknown> = {
+              status: newStatus,
+              updated_at: new Date().toISOString(),
+            };
+            if (newStatus === "paused") {
+              updateFields.paused_at = new Date().toISOString();
+            } else if (newStatus === "running") {
+              updateFields.resumed_at = new Date().toISOString();
             }
+
+            const { error: updateError } = await supabase
+                .from("active_timers")
+                .update(updateFields)
+                .eq("id", timer.id);
+                
+            if (updateError) throw new Error(updateError.message);
+
+            return jsonContent({ status: newStatus, timer_id: timer.id });
+          }
         );
 
         server.registerTool(

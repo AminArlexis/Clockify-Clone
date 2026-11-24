@@ -175,171 +175,171 @@ Deno.serve(
           version: "0.1.0",
         });
 
-        server.registerTool(
-          "whoami",
-          {
-            description: "Get the identity of the authenticated TimeFlow user.",
-            inputSchema: z.object({}),
-            annotations: { readOnlyHint: true },
-          },
-          async () => {
-            const { data, error } = await supabase.auth.getUser();
+          server.registerTool(
+            "whoami",
+            {
+              description: "Get the identity of the authenticated TimeFlow user.",
+              inputSchema: z.object({}),
+              annotations: { readOnlyHint: true },
+            },
+            async () => {
+              const { data, error } = await supabase.auth.getUser();
 
-            if (error) {
-              throw new Error(error.message);
-            }
+              if (error) {
+                throw new Error(error.message);
+              }
 
-            return jsonContent({
-              id: data.user.id,
-              email: data.user.email,
-            });
-          },
-        );
+              return jsonContent({
+                id: data.user.id,
+                email: data.user.email,
+              });
+            },
+          );
 
-        server.registerTool(
-          "list_time_entries",
-          {
-            description:
-              "List time entries for the authenticated user (or workspace if admin), optionally filtered by workspace, date range, project, or task.",
-            inputSchema: z.object({
-              workspace_id: z.string().optional().describe("Filter by workspace ID."),
-              from: z.string().optional().describe("Include entries starting at or after this ISO 8601 datetime."),
-              to: z.string().optional().describe("Include entries starting at or before this ISO 8601 datetime."),
-              project_id: z.string().optional().describe("Filter by project ID."),
-              task_id: z.string().optional().describe("Filter by task ID."),
-              limit: z.number().int().min(1).max(200).optional().default(50).describe("Maximum entries to return (1-200, default 50)."),
-            }),
-            annotations: { readOnlyHint: true },
-          },
-          async ({ workspace_id, from, to, project_id, task_id, limit }) => {
-            let query = supabase
-              .from("time_entries")
-              .select("*")
-              .order("start_time", { ascending: false })
-              .limit(limit);
+          server.registerTool(
+            "list_time_entries",
+            {
+              description:
+                "List time entries for the authenticated user (or workspace if admin), optionally filtered by workspace, date range, project, or task.",
+              inputSchema: z.object({
+                workspace_id: z.string().optional().describe("Filter by workspace ID."),
+                from: z.string().optional().describe("Include entries starting at or after this ISO 8601 datetime."),
+                to: z.string().optional().describe("Include entries starting at or before this ISO 8601 datetime."),
+                project_id: z.string().optional().describe("Filter by project ID."),
+                task_id: z.string().optional().describe("Filter by task ID."),
+                limit: z.number().int().min(1).max(200).optional().default(50).describe("Maximum entries to return (1-200, default 50)."),
+              }),
+              annotations: { readOnlyHint: true },
+            },
+            async ({ workspace_id, from, to, project_id, task_id, limit }) => {
+              let query = supabase
+                .from("time_entries")
+                .select("*")
+                .order("start_time", { ascending: false })
+                .limit(limit);
 
-            if (workspace_id) query = query.eq("workspace_id", workspace_id);
-            if (from) query = query.gte("start_time", parseIsoDate(from, "from"));
-            if (to) query = query.lte("start_time", parseIsoDate(to, "to"));
-            if (project_id) query = query.eq("project_id", project_id);
-            if (task_id) query = query.eq("task_id", task_id);
+              if (workspace_id) query = query.eq("workspace_id", workspace_id);
+              if (from) query = query.gte("start_time", parseIsoDate(from, "from"));
+              if (to) query = query.lte("start_time", parseIsoDate(to, "to"));
+              if (project_id) query = query.eq("project_id", project_id);
+              if (task_id) query = query.eq("task_id", task_id);
 
-            const { data, error } = await query;
-            if (error) throw new Error(error.message);
+              const { data, error } = await query;
+              if (error) throw new Error(error.message);
 
-            return jsonContent({
-              count: data?.length ?? 0,
-              entries: data ?? [],
-            });
-          },
-        );
+              return jsonContent({
+                count: data?.length ?? 0,
+                entries: data ?? [],
+              });
+            },
+          );
 
-        server.registerTool(
-          "create_time_entry",
-          {
-            description: "Create a manual time entry in TimeFlow.",
-            inputSchema: z.object({
-              description: z.string().trim().min(1, "Description is required.").describe("What you worked on."),
-              start_time: z.string().min(1).describe("Start time in ISO 8601 format (e.g. 2026-11-23T09:00:00+08:00)."),
-              end_time: z.string().min(1).describe("End time in ISO 8601 format (must be after start_time)."),
-              workspace_id: z.string().optional().describe("Workspace ID. Defaults to your first active workspace."),
-              project_id: z.string().optional().describe("Optional project ID."),
-              task_id: z.string().optional().describe("Optional task ID."),
-              tag_ids: z.array(z.string()).optional().default([]).describe("Optional list of tag IDs."),
-              notes: z.string().optional().describe("Optional notes for the time entry."),
-            }),
-            annotations: { readOnlyHint: false, destructiveHint: false },
-          },
-          async ({ description, start_time, end_time, workspace_id, project_id, task_id, tag_ids, notes }) => {
-            const userId = await getAuthenticatedUserId(supabase);
-            const resolvedWorkspaceId = await resolveWorkspaceId(supabase, userId, workspace_id);
+          server.registerTool(
+            "create_time_entry",
+            {
+              description: "Create a manual time entry in TimeFlow.",
+              inputSchema: z.object({
+                description: z.string().trim().min(1, "Description is required.").describe("What you worked on."),
+                start_time: z.string().min(1).describe("Start time in ISO 8601 format (e.g. 2026-11-23T09:00:00+08:00)."),
+                end_time: z.string().min(1).describe("End time in ISO 8601 format (must be after start_time)."),
+                workspace_id: z.string().optional().describe("Workspace ID. Defaults to your first active workspace."),
+                project_id: z.string().optional().describe("Optional project ID."),
+                task_id: z.string().optional().describe("Optional task ID."),
+                tag_ids: z.array(z.string()).optional().default([]).describe("Optional list of tag IDs."),
+                notes: z.string().optional().describe("Optional notes for the time entry."),
+              }),
+              annotations: { readOnlyHint: false, destructiveHint: false },
+            },
+            async ({ description, start_time, end_time, workspace_id, project_id, task_id, tag_ids, notes }) => {
+              const userId = await getAuthenticatedUserId(supabase);
+              const resolvedWorkspaceId = await resolveWorkspaceId(supabase, userId, workspace_id);
 
-            const startIso = parseIsoDate(start_time, "start_time");
-            const endIso = parseIsoDate(end_time, "end_time");
-            if (Date.parse(endIso) <= Date.parse(startIso)) {
-              throw new Error("end_time must be after start_time.");
-            }
+              const startIso = parseIsoDate(start_time, "start_time");
+              const endIso = parseIsoDate(end_time, "end_time");
+              if (Date.parse(endIso) <= Date.parse(startIso)) {
+                throw new Error("end_time must be after start_time.");
+              }
 
-            const uniqueTagIds = [...new Set(tag_ids)];
-            await validateEntryReferences(supabase, resolvedWorkspaceId, {
-              projectId: project_id,
-              taskId: task_id,
-              tagIds: uniqueTagIds,
-            });
+              const uniqueTagIds = [...new Set(tag_ids)];
+              await validateEntryReferences(supabase, resolvedWorkspaceId, {
+                projectId: project_id,
+                taskId: task_id,
+                tagIds: uniqueTagIds,
+              });
 
-            const entry = {
-              id: uid("entry"),
-              workspace_id: resolvedWorkspaceId,
-              user_id: userId,
-              description,
-              project_id: project_id || null,
-              task_id: task_id || null,
-              tag_ids: uniqueTagIds,
-              start_time: startIso,
-              end_time: endIso,
-              source: "manual",
-              segments: [
-                {
-                  id: uid("segment"),
-                  type: "work",
-                  start: startIso,
-                  end: endIso,
-                },
-              ],
-              notes: notes?.trim() || null,
-            };
+              const entry = {
+                id: uid("entry"),
+                workspace_id: resolvedWorkspaceId,
+                user_id: userId,
+                description,
+                project_id: project_id || null,
+                task_id: task_id || null,
+                tag_ids: uniqueTagIds,
+                start_time: startIso,
+                end_time: endIso,
+                source: "manual",
+                segments: [
+                  {
+                    id: uid("segment"),
+                    type: "work",
+                    start: startIso,
+                    end: endIso,
+                  },
+                ],
+                notes: notes?.trim() || null,
+              };
 
-            const { data, error } = await supabase
-              .from("time_entries")
-              .insert(entry)
-              .select("*")
-              .single();
+              const { data, error } = await supabase
+                .from("time_entries")
+                .insert(entry)
+                .select("*")
+                .single();
 
-            if (error) throw new Error(error.message);
+              if (error) throw new Error(error.message);
 
-            await recordAuditEvent(supabase, {
-              workspace_id: resolvedWorkspaceId,
-              actor_id: userId,
-              action: "Created time entry",
-              target: description,
-              detail: "Manual entry added via MCP",
-              updated_value: JSON.stringify(data),
-            });
+              await recordAuditEvent(supabase, {
+                workspace_id: resolvedWorkspaceId,
+                actor_id: userId,
+                action: "Created time entry",
+                target: description,
+                detail: "Manual entry added via MCP",
+                updated_value: JSON.stringify(data),
+              });
 
-            return jsonContent(data);
-          },
-        );
+              return jsonContent(data);
+            },
+          );
 
-        server.registerTool(
-          "update_time_entry",
-          {
-            description: "Update an existing time entry by ID.",
-            inputSchema: z.object({
-              id: z.string().min(1).describe("ID of the time entry to update."),
-              description: z.string().trim().min(1).optional().describe("Updated description."),
-              start_time: z.string().optional().describe("Updated start time (ISO 8601)."),
-              end_time: z.string().optional().describe("Updated end time (ISO 8601)."),
-              project_id: z.string().nullable().optional().describe("Updated project ID, or null to clear."),
-              task_id: z.string().nullable().optional().describe("Updated task ID, or null to clear."),
-              tag_ids: z.array(z.string()).optional().describe("Updated list of tag IDs."),
-              notes: z.string().nullable().optional().describe("Updated notes, or null to clear."),
-              reason: z.string().optional().describe("Optional reason for the update (recorded in audit log)."),
-            }),
-            annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-          },
-          async ({ id, description, start_time, end_time, project_id, task_id, tag_ids, notes, reason }) => {
-            const userId = await getAuthenticatedUserId(supabase);
+          server.registerTool(
+            "update_time_entry",
+            {
+              description: "Update an existing time entry by ID.",
+              inputSchema: z.object({
+                id: z.string().min(1).describe("ID of the time entry to update."),
+                description: z.string().trim().min(1).optional().describe("Updated description."),
+                start_time: z.string().optional().describe("Updated start time (ISO 8601)."),
+                end_time: z.string().optional().describe("Updated end time (ISO 8601)."),
+                project_id: z.string().nullable().optional().describe("Updated project ID, or null to clear."),
+                task_id: z.string().nullable().optional().describe("Updated task ID, or null to clear."),
+                tag_ids: z.array(z.string()).optional().describe("Updated list of tag IDs."),
+                notes: z.string().nullable().optional().describe("Updated notes, or null to clear."),
+                reason: z.string().optional().describe("Optional reason for the update (recorded in audit log)."),
+              }),
+              annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+            },
+            async ({ id, description, start_time, end_time, project_id, task_id, tag_ids, notes, reason }) => {
+              const userId = await getAuthenticatedUserId(supabase);
 
-            const { data: existing, error: fetchError } = await supabase
-              .from("time_entries")
-              .select("*")
-              .eq("id", id)
-              .maybeSingle();
+              const { data: existing, error: fetchError } = await supabase
+                .from("time_entries")
+                .select("*")
+                .eq("id", id)
+                .maybeSingle();
 
-            if (fetchError) throw new Error(fetchError.message);
-            if (!existing) {
-              throw new Error(`Time entry "${id}" was not found or is not accessible.`);
-            }
+              if (fetchError) throw new Error(fetchError.message);
+              if (!existing) {
+                throw new Error(`Time entry "${id}" was not found or is not accessible.`);
+              }
 
             const nextStart = start_time ? parseIsoDate(start_time, "start_time") : existing.start_time;
             const nextEnd = end_time ? parseIsoDate(end_time, "end_time") : existing.end_time;
@@ -422,17 +422,16 @@ Deno.serve(
           async ({ description, workspace_id, project_id, task_id, tag_ids }) => {
             const userId = await getAuthenticatedUserId(supabase);
             const resolvedWorkspaceId = await resolveWorkspaceId(supabase, userId, workspace_id);
-            
-            // Check if already running
+
             const { data: existing, error: existingError } = await supabase
-                .from("active_timers")
-                .select("*")
-                .eq("user_id", userId)
-                .or("status.eq.running,status.eq.paused")
-                .maybeSingle();
+              .from("active_timers")
+              .select("id")
+              .eq("user_id", userId)
+              .or("status.eq.running,status.eq.paused")
+              .maybeSingle();
 
             if (existingError) throw new Error(existingError.message);
-            if (existing) throw new Error("A timer is already running. Stop or pause it first.");
+            if (existing) throw new Error("A timer is already active. Stop it first.");
 
             await validateEntryReferences(supabase, resolvedWorkspaceId, {
               projectId: project_id,
@@ -440,6 +439,7 @@ Deno.serve(
               tagIds: tag_ids,
             });
 
+            const nowIso = new Date().toISOString();
             const timer = {
               id: uid("timer"),
               workspace_id: resolvedWorkspaceId,
@@ -448,9 +448,9 @@ Deno.serve(
               project_id: project_id || null,
               task_id: task_id || null,
               tag_ids: tag_ids || [],
-              started_at: new Date().toISOString(),
+              started_at: nowIso,
               status: "running",
-              segments: [], // Starting empty, logic for segments should be in stop
+              segments: [{ id: uid("segment"), type: "work", start: nowIso }],
             };
 
             const { data, error } = await supabase
@@ -460,42 +460,50 @@ Deno.serve(
               .single();
 
             if (error) throw new Error(error.message);
-
             return jsonContent(data);
-          }
+          },
         );
 
         server.registerTool(
           "stop_timer",
           {
-            description: "Stop the active timer and create a time entry. The timer duration is calculated from started_at to now.",
+            description: "Stop the active timer (running or paused) and create a time entry from its work and break segments.",
             inputSchema: z.object({
-              workspace_id: z.string().optional().describe("Workspace ID (optional, will resolve active timer)."),
+              workspace_id: z.string().optional().describe("Workspace ID (optional)."),
             }),
             annotations: { readOnlyHint: false, destructiveHint: false },
           },
-          async ({ workspace_id }) => {
+          async () => {
             const userId = await getAuthenticatedUserId(supabase);
 
             const { data: timer, error: timerError } = await supabase
-                .from("active_timers")
-                .select("*")
-                .eq("user_id", userId)
-                .or("status.eq.running,status.eq.paused")
-                .maybeSingle();
+              .from("active_timers")
+              .select("*")
+              .eq("user_id", userId)
+              .or("status.eq.running,status.eq.paused")
+              .maybeSingle();
 
             if (timerError) throw new Error(timerError.message);
-            if (!timer) throw new Error("No active running timer found. Start a timer first.");
+            if (!timer) throw new Error("No active timer found. Start a timer first.");
 
-            const startTime = new Date(timer.started_at).getTime();
-            const endTime = Date.now();
-            const durationMs = Math.max(0, endTime - startTime);
-            const durationSeconds = Math.floor(durationMs / 1000);
+            const now = new Date().toISOString();
+            let segs = Array.isArray(timer.segments) ? [...timer.segments] : [];
+            if (segs.length === 0) {
+              segs = [{ id: uid("segment"), type: "work", start: timer.started_at }];
+            }
+            const closedSegments = segs.map((s: { end?: string }) => (s.end ? s : { ...s, end: now }));
+
+            const workMs = closedSegments
+              .filter((s: { type: string }) => s.type === "work")
+              .reduce(
+                (sum: number, s: { start: string; end: string }) =>
+                  sum + Math.max(0, Date.parse(s.end) - Date.parse(s.start)),
+                0,
+              );
+            const durationSeconds = Math.floor(workMs / 1000);
             const durationMinutes = Math.floor(durationSeconds / 60);
             const durationHours = Math.floor(durationMinutes / 60);
-            const remainingSeconds = durationSeconds % 60;
 
-            // Create entry
             const entry = {
               id: uid("entry"),
               workspace_id: timer.workspace_id,
@@ -505,41 +513,30 @@ Deno.serve(
               task_id: timer.task_id,
               tag_ids: timer.tag_ids,
               start_time: timer.started_at,
-              end_time: new Date().toISOString(),
+              end_time: now,
               source: "timer",
-              segments: [
-                {
-                  id: uid("segment"),
-                  type: "work",
-                  start: timer.started_at,
-                  end: new Date().toISOString(),
-                  duration_seconds: durationSeconds,
-                },
-              ],
+              segments: closedSegments,
             };
 
             const { error: entryError } = await supabase.from("time_entries").insert(entry);
             if (entryError) throw new Error(entryError.message);
 
-            // Delete timer
             const { error: deleteError } = await supabase
-                .from("active_timers")
-                .delete()
-                .eq("id", timer.id);
-
+              .from("active_timers")
+              .delete()
+              .eq("id", timer.id);
             if (deleteError) throw new Error(deleteError.message);
 
             return jsonContent({
               status: "stopped",
-              timer: timer,
               entry,
-              duration: {
+              work_duration: {
                 hours: durationHours,
-                minutes: durationMinutes,
-                seconds: remainingSeconds,
+                minutes: durationMinutes % 60,
+                seconds: durationSeconds % 60,
               },
             });
-          }
+          },
         );
 
         server.registerTool(
@@ -553,36 +550,47 @@ Deno.serve(
           },
           async ({ action }) => {
             const userId = await getAuthenticatedUserId(supabase);
+
             const { data: timer, error: timerError } = await supabase
-                .from("active_timers")
-                .select("*")
-                .eq("user_id", userId)
-                .or("status.eq.running,status.eq.paused")
-                .maybeSingle();
+              .from("active_timers")
+              .select("*")
+              .eq("user_id", userId)
+              .or("status.eq.running,status.eq.paused")
+              .maybeSingle();
 
             if (timerError) throw new Error(timerError.message);
-            if (!timer) throw new Error("No active running timer found. Start one first.");
+            if (!timer) throw new Error("No active timer found. Start one first.");
 
-            const newStatus = action === "pause" ? "paused" : "running";
-            const updateFields: Record<string, unknown> = {
-              status: newStatus,
-              updated_at: new Date().toISOString(),
-            };
-            if (newStatus === "paused") {
-              updateFields.paused_at = new Date().toISOString();
-            } else if (newStatus === "running") {
-              updateFields.resumed_at = new Date().toISOString();
+            if (action === "pause" && timer.status !== "running") {
+              throw new Error("Timer is not running.");
+            }
+            if (action === "resume" && timer.status !== "paused") {
+              throw new Error("Timer is not paused.");
             }
 
-            const { error: updateError } = await supabase
-                .from("active_timers")
-                .update(updateFields)
-                .eq("id", timer.id);
-                
-            if (updateError) throw new Error(updateError.message);
+            const now = new Date().toISOString();
+            let segs = Array.isArray(timer.segments) ? [...timer.segments] : [];
+            if (segs.length === 0) {
+              segs = [{ id: uid("segment"), type: "work", start: timer.started_at }];
+            }
+            const closed = segs.map((s: { end?: string }) => (s.end ? s : { ...s, end: now }));
+            const nextType = action === "pause" ? "break" : "work";
+            const nextSegments = [...closed, { id: uid("segment"), type: nextType, start: now }];
 
+            const newStatus = action === "pause" ? "paused" : "running";
+            const { error: updateError } = await supabase
+              .from("active_timers")
+              .update({
+                status: newStatus,
+                paused_at: action === "pause" ? now : null,
+                segments: nextSegments,
+                updated_at: now,
+              })
+              .eq("id", timer.id);
+
+            if (updateError) throw new Error(updateError.message);
             return jsonContent({ status: newStatus, timer_id: timer.id });
-          }
+          },
         );
 
         server.registerTool(

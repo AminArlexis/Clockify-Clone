@@ -1536,9 +1536,9 @@ function runningSegmentDuration(
       0,
     );
 
-  const ticking =
-    (type === "work" && activeTimer) ||  // work timer ticks while active (running OR paused)
-    (type === "break" && activeTimer?.status === "paused");
+const ticking =
+  (type === "work" && activeTimer?.status === "running") ||
+  (type === "break" && activeTimer?.status === "paused");
 
   if (!activeTimer || !ticking) return endedMs;
 
@@ -1550,21 +1550,29 @@ function runningSegmentDuration(
       0,
     );
 
-  if (openMs > 0) return endedMs + openMs;
+if (openMs > 0) return endedMs + openMs;
 
-  // Fallback para sa work lang kapag walang open segment
-  if (type === "work" && activeTimer.startedAt) {
-    return endedMs + Math.max(0, now - new Date(activeTimer.startedAt).getTime());
-  }
-  return endedMs;
+if (type === "work" && activeTimer.startedAt) {
+  return endedMs + Math.max(0, now - new Date(activeTimer.startedAt).getTime());
+}
+
+// Walang bukas na break segment: magsimula sa pagsara ng huling work segment
+if (type === "break") {
+  const lastWorkEnd = segs
+    .filter((s) => s.type === "work" && s.end)
+    .map((s) => new Date(s.end!).getTime())
+    .sort((a, b) => b - a)[0];
+  if (lastWorkEnd) return endedMs + Math.max(0, now - lastWorkEnd);
+}
+return endedMs;
 }
 
 function TimerClock({ type = "work" }: { type?: Segment["type"] }) {
   const { data } = useAppStore();
   const [now, setNow] = useState(() => Date.now());
-  const isTicking =
-    (type === "work" && data.activeTimer) ||  // work timer ticks while active (running OR paused)
-    (type === "break" && data.activeTimer?.status === "paused");
+const isTicking =
+  (type === "work" && data.activeTimer?.status === "running") ||
+  (type === "break" && data.activeTimer?.status === "paused");
 
   useEffect(() => {
     setNow(Date.now());

@@ -1537,7 +1537,7 @@ function runningSegmentDuration(
     );
 
   const ticking =
-    (type === "work" && activeTimer?.status === "running") ||
+    (type === "work" && activeTimer) ||  // work timer ticks while active (running OR paused)
     (type === "break" && activeTimer?.status === "paused");
 
   if (!activeTimer || !ticking) return endedMs;
@@ -1563,7 +1563,7 @@ function TimerClock({ type = "work" }: { type?: Segment["type"] }) {
   const { data } = useAppStore();
   const [now, setNow] = useState(() => Date.now());
   const isTicking =
-    (type === "work" && data.activeTimer?.status === "running") ||
+    (type === "work" && data.activeTimer) ||  // work timer ticks while active (running OR paused)
     (type === "break" && data.activeTimer?.status === "paused");
 
   useEffect(() => {

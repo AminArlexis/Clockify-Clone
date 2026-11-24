@@ -64,7 +64,7 @@ import {
   claimWorkspaceInvitesInSupabase,
   fetchAppDataFromSupabase,
 } from "./lib/supabaseSync";
-import type { AppData, EntryInput, Page, Project, Segment, Tag, Task, TimeEntry, User } from "./types";
+import type { AppData, ActiveTimer, EntryInput, Page, Project, Segment, Tag, Task, TimeEntry, User } from "./types";
 
 const id = (prefix: string) => `${prefix}-${Date.now()}`;
 const safeTimeZone = (timezone?: string) => {
@@ -1502,25 +1502,58 @@ function LiveUserClock({
   );
 }
 
-function formatSegmentDuration(segments: Segment[] | undefined, type: Segment["type"], now: number) {
+function formatSegmentDuration(
+  segments: Segment[] | undefined,
+  type: Segment["type"],
+  now: number,
+  activeTimer?: ActiveTimer,
+) {
   const totalSeconds = Math.floor(
-    (segments
-      ?.filter((segment) => segment.type === type)
-      .reduce(
-        (sum, segment) =>
-          sum +
-          Math.max(
-            0,
-            (segment.end ? new Date(segment.end).getTime() : now) -
-              new Date(segment.start).getTime(),
-          ),
-        0,
-      ) || 0) / 1000,
+    (runningSegmentDuration(segments, type, now, activeTimer) || 0) / 1000,
   );
   const hours = Math.floor(totalSeconds / 3600);
   const mins = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
   return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function runningSegmentDuration(
+  segments: Segment[] | undefined,
+  type: Segment["type"],
+  now: number,
+  activeTimer?: ActiveTimer,
+) {
+  const segs = segments ?? [];
+  const endedMs = segs
+    .filter((segment) => segment.type === type && segment.end)
+    .reduce(
+      (sum, segment) =>
+        sum +
+        Math.max(
+          0,
+          new Date(segment.end!).getTime() - new Date(segment.start).getTime(),
+        ),
+      0,
+    );
+
+  if (activeTimer?.status !== "running") return endedMs;
+
+  const openMs = segs
+    .filter((segment) => segment.type === type && !segment.end)
+    .reduce(
+      (sum, segment) =>
+        sum + Math.max(0, now - new Date(segment.start).getTime()),
+      0,
+    );
+
+  if (openMs > 0) return endedMs + openMs;
+
+  // No open segment (e.g. Supabase returned empty segments). Fall back to
+  // elapsed from startedAt so a running timer never renders 00:00:00.
+  if (activeTimer.startedAt) {
+    return endedMs + Math.max(0, now - new Date(activeTimer.startedAt).getTime());
+  }
+  return endedMs;
 }
 
 function TimerClock({ type = "work" }: { type?: Segment["type"] }) {
@@ -1537,7 +1570,7 @@ function TimerClock({ type = "work" }: { type?: Segment["type"] }) {
     return () => window.clearInterval(timer);
   }, [isTicking, data.activeTimer?.id, data.activeTimer?.segments.length]);
 
-  return <strong>{formatSegmentDuration(data.activeTimer?.segments, type, now)}</strong>;
+  return <strong>{formatSegmentDuration(data.activeTimer?.segments, type, now, data.activeTimer)}</strong>;
 }
 
 function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void }) {

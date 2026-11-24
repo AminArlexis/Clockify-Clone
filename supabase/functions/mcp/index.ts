@@ -407,6 +407,153 @@ Deno.serve(
         );
 
         server.registerTool(
+          "start_timer",
+          {
+            description: "Start a timer in TimeFlow.",
+            inputSchema: z.object({
+              description: z.string().trim().min(1, "Description is required.").describe("What you are working on."),
+              workspace_id: z.string().optional().describe("Workspace ID. Defaults to your active workspace."),
+              project_id: z.string().optional().describe("Optional project ID."),
+              task_id: z.string().optional().describe("Optional task ID."),
+              tag_ids: z.array(z.string()).optional().default([]).describe("Optional list of tag IDs."),
+            }),
+            annotations: { readOnlyHint: false, destructiveHint: false },
+          },
+          async ({ description, workspace_id, project_id, task_id, tag_ids }) => {
+            const userId = await getAuthenticatedUserId(supabase);
+            const resolvedWorkspaceId = await resolveWorkspaceId(supabase, userId, workspace_id);
+            
+            // Check if already running
+            const { data: existing, error: existingError } = await supabase
+                .from("active_timers")
+                .select("*")
+                .eq("user_id", userId)
+                .maybeSingle();
+
+            if (existingError) throw new Error(existingError.message);
+            if (existing) throw new Error("A timer is already running. Stop or pause it first.");
+
+            await validateEntryReferences(supabase, resolvedWorkspaceId, {
+              projectId: project_id,
+              taskId: task_id,
+              tagIds: tag_ids,
+            });
+
+            const timer = {
+              id: uid("timer"),
+              workspace_id: resolvedWorkspaceId,
+              user_id: userId,
+              description,
+              project_id: project_id || null,
+              task_id: task_id || null,
+              tag_ids: tag_ids || [],
+              started_at: new Date().toISOString(),
+              status: "running",
+              segments: [], // Starting empty, logic for segments should be in stop
+            };
+
+            const { data, error } = await supabase
+              .from("active_timers")
+              .insert(timer)
+              .select("*")
+              .single();
+
+            if (error) throw new Error(error.message);
+
+            return jsonContent(data);
+          }
+        );
+
+        server.registerTool(
+          "stop_timer",
+          {
+            description: "Stop the active timer and create a time entry.",
+            inputSchema: z.object({
+              workspace_id: z.string().optional().describe("Workspace ID (optional, will resolve active timer)."),
+            }),
+            annotations: { readOnlyHint: false, destructiveHint: false },
+          },
+          async ({ workspace_id }) => {
+            const userId = await getAuthenticatedUserId(supabase);
+            
+            const { data: timer, error: timerError } = await supabase
+                .from("active_timers")
+                .select("*")
+                .eq("user_id", userId)
+                .maybeSingle();
+            
+            if (timerError) throw new Error(timerError.message);
+            if (!timer) throw new Error("No active timer found.");
+
+            const startTime = timer.started_at;
+            const endTime = new Date().toISOString();
+
+            // Create entry
+            const entry = {
+              id: uid("entry"),
+              workspace_id: timer.workspace_id,
+              user_id: userId,
+              description: timer.description,
+              project_id: timer.project_id,
+              task_id: timer.task_id,
+              tag_ids: timer.tag_ids,
+              start_time: startTime,
+              end_time: endTime,
+              source: "timer",
+              segments: [
+                {
+                  id: uid("segment"),
+                  type: "work",
+                  start: startTime,
+                  end: endTime,
+                },
+              ],
+            };
+
+            const { error: entryError } = await supabase.from("time_entries").insert(entry);
+            if (entryError) throw new Error(entryError.message);
+
+            // Delete timer
+            await supabase.from("active_timers").delete().eq("id", timer.id);
+
+            return jsonContent({ status: "stopped", entry });
+          }
+        );
+
+        server.registerTool(
+            "pause_timer",
+            {
+                description: "Pause or resume the active timer.",
+                inputSchema: z.object({
+                    action: z.enum(["pause", "resume"]).describe("Action to perform."),
+                }),
+                annotations: { readOnlyHint: false, destructiveHint: false },
+            },
+            async ({ action }) => {
+                const userId = await getAuthenticatedUserId(supabase);
+                const { data: timer, error: timerError } = await supabase
+                    .from("active_timers")
+                    .select("*")
+                    .eq("user_id", userId)
+                    .maybeSingle();
+
+                if (timerError) throw new Error(timerError.message);
+                if (!timer) throw new Error("No active timer found.");
+
+                const newStatus = action === "pause" ? "paused" : "running";
+                
+                const { error: updateError } = await supabase
+                    .from("active_timers")
+                    .update({ status: newStatus, updated_at: new Date().toISOString() })
+                    .eq("id", timer.id);
+                
+                if (updateError) throw new Error(updateError.message);
+
+                return jsonContent({ status: newStatus });
+            }
+        );
+
+        server.registerTool(
           "delete_time_entry",
           {
             description: "Delete a time entry by ID.",
@@ -447,6 +594,8 @@ Deno.serve(
             return jsonContent({ deleted: true, id });
           },
         );
+
+
 
         return server;
       });

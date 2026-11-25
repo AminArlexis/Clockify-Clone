@@ -41,8 +41,13 @@ function parseIsoDate(value: string, fieldName: string): string {
   return new Date(ms).toISOString();
 }
 
-async function getAuthenticatedUserId(supabase: SupabaseClient): Promise<string> {
-  const { data, error } = await supabase.auth.getUser();
+async function getAuthenticatedUserId(
+  supabase: SupabaseClient,
+  accessToken?: string,
+): Promise<string> {
+  const { data, error } = accessToken
+    ? await supabase.auth.getUser(accessToken)
+    : await supabase.auth.getUser();
   if (error || !data.user) {
     throw new Error(error?.message || "Authenticated user not found.");
   }
@@ -169,6 +174,10 @@ Deno.serve(
       withSupabase({ auth: "user" }),
     ],
     async (req, { supabase }) => {
+      const authHeader = req.headers.get("Authorization") || "";
+      const accessToken = authHeader.toLowerCase().startsWith("bearer ")
+        ? authHeader.slice(7).trim()
+        : undefined;
       const handler = createMcpHandler(() => {
         const server = new McpServer({
           name: "timeflow",
@@ -183,7 +192,9 @@ Deno.serve(
               annotations: { readOnlyHint: true },
             },
             async () => {
-              const { data, error } = await supabase.auth.getUser();
+              const { data, error } = accessToken
+                ? await supabase.auth.getUser(accessToken)
+                : await supabase.auth.getUser();
 
               if (error) {
                 throw new Error(error.message);
@@ -251,7 +262,7 @@ Deno.serve(
               annotations: { readOnlyHint: false, destructiveHint: false },
             },
             async ({ description, start_time, end_time, workspace_id, project_id, task_id, tag_ids, notes }) => {
-              const userId = await getAuthenticatedUserId(supabase);
+              const userId = await getAuthenticatedUserId(supabase, accessToken);
               const resolvedWorkspaceId = await resolveWorkspaceId(supabase, userId, workspace_id);
 
               const startIso = parseIsoDate(start_time, "start_time");
@@ -328,7 +339,7 @@ Deno.serve(
               annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
             },
             async ({ id, description, start_time, end_time, project_id, task_id, tag_ids, notes, reason }) => {
-              const userId = await getAuthenticatedUserId(supabase);
+              const userId = await getAuthenticatedUserId(supabase, accessToken);
 
               const { data: existing, error: fetchError } = await supabase
                 .from("time_entries")
@@ -420,7 +431,7 @@ Deno.serve(
             annotations: { readOnlyHint: false, destructiveHint: false },
           },
           async ({ description, workspace_id, project_id, task_id, tag_ids }) => {
-            const userId = await getAuthenticatedUserId(supabase);
+            const userId = await getAuthenticatedUserId(supabase, accessToken);
             const resolvedWorkspaceId = await resolveWorkspaceId(supabase, userId, workspace_id);
 
             const { data: existing, error: existingError } = await supabase
@@ -474,7 +485,7 @@ Deno.serve(
             annotations: { readOnlyHint: false, destructiveHint: false },
           },
           async () => {
-            const userId = await getAuthenticatedUserId(supabase);
+            const userId = await getAuthenticatedUserId(supabase, accessToken);
 
             const { data: timer, error: timerError } = await supabase
               .from("active_timers")
@@ -549,7 +560,7 @@ Deno.serve(
             annotations: { readOnlyHint: false, destructiveHint: false },
           },
           async ({ action }) => {
-            const userId = await getAuthenticatedUserId(supabase);
+            const userId = await getAuthenticatedUserId(supabase, accessToken);
 
             const { data: timer, error: timerError } = await supabase
               .from("active_timers")
@@ -603,7 +614,7 @@ Deno.serve(
             annotations: { readOnlyHint: false, destructiveHint: true },
           },
           async ({ id }) => {
-            const userId = await getAuthenticatedUserId(supabase);
+            const userId = await getAuthenticatedUserId(supabase, accessToken);
 
             const { data: existing, error: fetchError } = await supabase
               .from("time_entries")

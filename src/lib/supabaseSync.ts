@@ -256,6 +256,16 @@ export async function updateMyProfileInSupabase(user: User) {
   if (error) throw error;
 }
 
+export async function updateWorkspaceNameInSupabase(workspaceId: string, name: string) {
+  const client = supabase;
+  if (!client) throw new Error("Supabase is not configured.");
+  const { error } = await client.rpc("update_workspace_name", {
+    p_workspace_id: workspaceId,
+    p_name: name,
+  });
+  if (error) throw error;
+}
+
 export async function inviteWorkspaceMemberInSupabase(
   workspaceId: string,
   email: string,

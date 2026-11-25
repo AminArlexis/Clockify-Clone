@@ -27,6 +27,7 @@ vi.mock("../lib/supabaseSync", () => ({
   claimWorkspaceInvitesInSupabase: vi.fn().mockResolvedValue(undefined),
   registerWorkspaceAccount: vi.fn().mockResolvedValue(undefined),
   updateWorkspaceMemberInSupabase: vi.fn().mockResolvedValue(undefined),
+  updateWorkspaceNameInSupabase: vi.fn().mockResolvedValue(undefined),
   updateMyProfileInSupabase: vi.fn().mockResolvedValue(undefined),
   inviteWorkspaceMemberInSupabase: vi.fn().mockResolvedValue(undefined),
   syncEntryToSupabase: vi.fn().mockResolvedValue(undefined),

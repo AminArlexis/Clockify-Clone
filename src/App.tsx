@@ -3945,8 +3945,18 @@ function AuditPage() {
 }
 
 function SettingsPage() {
-  const { data, currentUser, updateProfile } = useAppStore();
+  const { data, currentUser, updateProfile, updateWorkspaceName } = useAppStore();
   const [saved, setSaved] = useState(false);
+  const [wsSaved, setWsSaved] = useState(false);
+  const [wsError, setWsError] = useState("");
+  const activeWorkspace = data.workspaces.find(
+    (workspace) => workspace.id === data.activeWorkspaceId,
+  );
+  const [workspaceName, setWorkspaceName] = useState(activeWorkspace?.name || "");
+  useEffect(() => {
+    setWorkspaceName(activeWorkspace?.name || "");
+    setWsError("");
+  }, [activeWorkspace?.id, activeWorkspace?.name]);
   const [previewNow, setPreviewNow] = useState(() => new Date());
   useEffect(() => {
     const timer = window.setInterval(() => setPreviewNow(new Date()), 1000);
@@ -4056,25 +4066,59 @@ function SettingsPage() {
           <div className="card-header">
             <div>
               <h3>Workspace</h3>
-              <p>These preferences are saved to your profile.</p>
+              <p>
+                {currentUser.role === "admin"
+                  ? "Update your active workspace name."
+                  : "Workspace details for your current team."}
+              </p>
             </div>
           </div>
-          <div className="settings-form">
+          <form
+            className="settings-form"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              setWsError("");
+              try {
+                await updateWorkspaceName(workspaceName);
+                setWsSaved(true);
+                window.setTimeout(() => setWsSaved(false), 2500);
+              } catch (err) {
+                setWsError(err instanceof Error ? err.message : "Could not update workspace name.");
+              }
+            }}
+          >
             <label className="field">
               <span>Workspace name</span>
               <input
-                value={
-                  data.workspaces.find((workspace) => workspace.id === data.activeWorkspaceId)
-                    ?.name || ""
-                }
-                readOnly
+                value={workspaceName}
+                onChange={(e) => setWorkspaceName(e.target.value)}
+                readOnly={currentUser.role !== "admin"}
+                required
               />
             </label>
             <label className="field">
               <span>Your access</span>
               <input value={currentUser.role} readOnly />
             </label>
-          </div>
+            {wsError && (
+              <p className="form-error field-full" role="alert">
+                {wsError}
+              </p>
+            )}
+            {currentUser.role === "admin" && (
+              <div className="settings-save">
+                <Button type="submit">
+                  {wsSaved ? (
+                    <>
+                      <Check size={16} /> Saved
+                    </>
+                  ) : (
+                    "Save workspace"
+                  )}
+                </Button>
+              </div>
+            )}
+          </form>
         </section>
       </div>
     </div>

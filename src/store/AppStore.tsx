@@ -13,6 +13,7 @@ import {
   fetchAppDataFromSupabase,
   registerWorkspaceAccount,
   updateWorkspaceMemberInSupabase,
+  updateWorkspaceNameInSupabase,
   updateMyProfileInSupabase,
   inviteWorkspaceMemberInSupabase,
   syncEntryToSupabase,
@@ -84,6 +85,7 @@ interface AppStoreValue {
   saveUser: (user: User) => void;
   inviteMember: (email: string, role: User["role"]) => Promise<void>;
   updateProfile: (patch: Partial<User>) => void;
+  updateWorkspaceName: (name: string) => Promise<void>;
   addAudit: (action: string, target: string, detail: string) => void;
 }
 
@@ -741,6 +743,35 @@ export function AppStoreProvider({
       };
     });
 
+  const updateWorkspaceName = async (name: string) => {
+    const cleanName = name.trim();
+    if (!cleanName) {
+      throw new Error("A workspace name is required.");
+    }
+    if (currentUser?.role !== "admin") {
+      throw new Error("Only workspace admins can rename the workspace.");
+    }
+    const workspaceId = data.activeWorkspaceId;
+    if (isSupabaseConfigured && supabase && !initialData) {
+      await updateWorkspaceNameInSupabase(workspaceId, cleanName);
+    }
+    const event = auditEvent(
+      "Renamed workspace",
+      cleanName,
+      `Workspace name updated to ${cleanName}`,
+    );
+    reportSyncError("save audit event to Supabase", syncAuditEventToSupabase(event));
+    setData((current) => ({
+      ...current,
+      workspaces: current.workspaces.map((workspace) =>
+        workspace.id === workspaceId ? { ...workspace, name: cleanName } : workspace,
+      ),
+      audit: current.audit.some((candidate) => candidate.id === event.id)
+        ? current.audit
+        : [event, ...current.audit],
+    }));
+  };
+
   const scopedData = useMemo<AppData>(() => {
     const workspaceId = data.activeWorkspaceId;
     return {
@@ -834,6 +865,7 @@ export function AppStoreProvider({
         await inviteWorkspaceMemberInSupabase(data.activeWorkspaceId, email, role);
       },
       updateProfile,
+      updateWorkspaceName,
       addAudit,
     }),
     [scopedData, currentUser, loading, dataError, timerError, timerBusy],

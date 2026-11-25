@@ -862,6 +862,37 @@ GRANT EXECUTE ON FUNCTION public.invite_workspace_member(TEXT, TEXT, TEXT) TO au
 GRANT EXECUTE ON FUNCTION public.update_workspace_member(TEXT, UUID, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_my_profile(TEXT, TEXT, TEXT, TEXT) TO authenticated;
 
+DROP FUNCTION IF EXISTS public.update_workspace_name(TEXT, TEXT);
+
+CREATE FUNCTION public.update_workspace_name(
+    p_workspace_id TEXT,
+    p_name TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+    IF NOT public.is_workspace_admin(p_workspace_id) THEN
+        RAISE EXCEPTION 'Only workspace admins can rename the workspace.';
+    END IF;
+    IF BTRIM(COALESCE(p_name, '')) = '' THEN
+        RAISE EXCEPTION 'A workspace name is required.';
+    END IF;
+
+    UPDATE public.workspaces AS workspace
+    SET name = BTRIM(p_name)
+    WHERE workspace.id = p_workspace_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Workspace not found.';
+    END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.update_workspace_name(TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.update_workspace_name(TEXT, TEXT) TO authenticated;
+
 DO $$
 DECLARE
     v_table TEXT;
